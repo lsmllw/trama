@@ -34,7 +34,9 @@ import {
   MAX_ROUNDS,
   MINE_DAMAGE,
   MINE_VEHICLE_MULT,
+  NODE_BASE_CLEARANCE,
   NODE_CHARGES,
+  NODE_SHUFFLE_ROUNDS,
   OLEO_ATQ,
   RUN_BONUS,
   RUN_COST,
@@ -66,7 +68,7 @@ import { nextRandom } from './rng';
 import { hitDamage, startConfronto } from './confronto';
 import type { ConfrontoState } from './confronto';
 import { otherTeam, TEAMS } from './types';
-import type { Base, ClassId, GameState, ItemId, NodeColor, Pos, Team, Unit } from './types';
+import type { Base, ClassId, ColorNode, GameState, ItemId, NodeColor, Pos, Team, Unit } from './types';
 
 export interface NewGameOptions {
   azul: ClassId[];
@@ -649,6 +651,67 @@ function endOfRound(s: GameState): void {
   }
   s.round++;
   for (const n of s.nodes) n.charges = Math.min(NODE_CHARGES, n.charges + 1);
+  if ((s.round - 1) % NODE_SHUFFLE_ROUNDS === 0) shuffleNodes(s);
+}
+
+/** Rodadas que faltam até os cristais trocarem de lugar (1 = no começo da próxima rodada). */
+export function roundsToShuffle(s: GameState): number {
+  return NODE_SHUFFLE_ROUNDS - ((s.round - 1) % NODE_SHUFFLE_ROUNDS);
+}
+
+/**
+ * Os cristais somem num wormhole e reaparecem em casas sorteadas. Cada par espelhado continua
+ * espelhado (o mapa é simétrico), para nenhum lado ganhar vantagem. As cargas vão junto.
+ */
+export function shuffleNodes(s: GameState): void {
+  const W = s.width;
+  const H = s.height;
+  const mirror = (p: Pos): Pos => ({ x: W - 1 - p.x, y: H - 1 - p.y });
+  const key = (p: Pos) => `${p.x},${p.y}`;
+  // Nunca cai onde já há (ou havia) um cristal: ele sempre muda de lugar.
+  const taken = new Set<string>(s.nodes.map(key));
+  const placed: Pos[] = [];
+  const free = (p: Pos) => {
+    const t = s.terrain[p.y][p.x];
+    if (t !== 'planicie' && t !== 'no_verde' && t !== 'no_roxo' && t !== 'no_laranja') return false;
+    if (taken.has(key(p))) return false;
+    if (s.units.some((u) => u.alive && u.x === p.x && u.y === p.y)) return false;
+    if (s.barricades.some((b) => b.x === p.x && b.y === p.y) || s.mines.some((m) => m.x === p.x && m.y === p.y)) return false;
+    if (manhattan(p, s.bases.azul) < NODE_BASE_CLEARANCE || manhattan(p, s.bases.vermelho) < NODE_BASE_CLEARANCE) return false;
+    return placed.every((q) => manhattan(p, q) >= 3);
+  };
+  const cells: Pos[] = [];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) cells.push({ x, y });
+  const pick = (needMirror: boolean): Pos | null => {
+    const options = cells.filter((c) => free(c) && (!needMirror || (key(mirror(c)) !== key(c) && free(mirror(c)) && manhattan(c, mirror(c)) >= 3)));
+    if (!options.length) return null;
+    return options[Math.floor(nextRandom(s) * options.length)];
+  };
+  const done = new Set<ColorNode>();
+  const moves: { n: ColorNode; to: Pos }[] = [];
+  for (const n of s.nodes) {
+    if (done.has(n)) continue;
+    done.add(n);
+    const m = mirror(n);
+    const partner = s.nodes.find((o) => !done.has(o) && o.x === m.x && o.y === m.y && o.color === n.color);
+    if (partner) done.add(partner);
+    const c = pick(!!partner);
+    if (!c) continue;
+    for (const [node, to] of partner ? ([[n, c], [partner, mirror(c)]] as const) : ([[n, c]] as const)) {
+      taken.add(key(to));
+      placed.push(to);
+      moves.push({ n: node, to });
+    }
+  }
+  for (const { n, to } of moves) {
+    const from = { x: n.x, y: n.y };
+    const t = s.terrain[from.y][from.x];
+    if (t === 'no_verde' || t === 'no_roxo' || t === 'no_laranja') s.terrain[from.y][from.x] = 'planicie';
+    n.x = to.x;
+    n.y = to.y;
+    s.events.push({ kind: 'portal', from, to, color: n.color });
+  }
+  if (moves.length) log(s, 'Os cristais atravessaram wormholes e mudaram de lugar.');
 }
 
 function startPhase(s: GameState, team: Team): void {

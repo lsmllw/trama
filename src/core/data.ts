@@ -152,6 +152,10 @@ export const TERRAIN: Record<Terrain, TerrainDef> = {
 
 /** XP total para chegar a cada level (índice = level − 1). */
 export const LEVEL_XP = [0, 3, 6, 10, 15];
+/** A cada quantas rodadas os cristais trocam de lugar. */
+export const NODE_SHUFFLE_ROUNDS = 3;
+/** Distância mínima entre um cristal novo e as Bases. */
+export const NODE_BASE_CLEARANCE = 4;
 export const MAX_LEVEL = LEVEL_XP.length;
 /** Level em que a habilidade da classe é liberada. */
 export const ABILITY_LEVEL = 2;

@@ -208,7 +208,9 @@ export type GameEvent =
   | { kind: 'abate'; x: number; y: number }
   | { kind: 'impacto'; cells: Pos[] }
   | { kind: 'tiro'; from: Pos; to: Pos }
-  | { kind: 'texto'; x: number; y: number; text: string; color: string };
+  | { kind: 'texto'; x: number; y: number; text: string; color: string }
+  /** Cristal entrou num wormhole em `from` e saiu em `to`. */
+  | { kind: 'portal'; from: Pos; to: Pos; color: NodeColor };
 
 export type Winner = Team | 'empate' | null;
 

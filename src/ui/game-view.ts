@@ -40,6 +40,7 @@ import {
   planActivation,
   points,
   previewAttacks,
+  roundsToShuffle,
   run,
   RUN_BONUS,
   RUN_COST,
@@ -793,7 +794,9 @@ export class GameView {
     }
     if (this.hover) {
       const t = s.terrain[this.hover.y][this.hover.x];
-      text += `   [${this.hover.x + 1},${this.hover.y + 1}] ${TERRAIN[t].label}`;
+      const node = s.nodes.find((n) => same(n, this.hover!));
+      const nodeName = node ? `Cristal ${node.color === 'prisma' ? 'prismático' : node.color} (${node.charges} carga${node.charges === 1 ? '' : 's'})` : null;
+      text += `   [${this.hover.x + 1},${this.hover.y + 1}] ${nodeName ?? TERRAIN[t].label}`;
       const p = this.hl.previews.find((v) => same(v, this.hover!));
       if (p) {
         const side = p.side && p.side !== 'frente' ? ` pelo ${p.side} (×${String(Math.round(p.mult * 100) / 100).replace('.', ',')})` : p.mult < 1 ? ' de frente, no escudo' : ' de frente';
@@ -838,6 +841,11 @@ export class GameView {
       baseBar('azul'),
       baseBar('vermelho'),
       h('span', { class: 'base-hp' }, `Pontos ${points(s, 'azul')} × ${points(s, 'vermelho')}`),
+      h(
+        'span',
+        { class: 'base-hp', title: 'A cada 3 rodadas os cristais atravessam wormholes e reaparecem em outras casas.' },
+        roundsToShuffle(s) === 1 ? 'Cristais mudam na próxima rodada' : `Cristais mudam em ${roundsToShuffle(s)} rodadas`,
+      ),
       h('button', { onclick: () => this.onExit(false), style: 'margin-left:auto' }, 'Novo time'),
     );
   }

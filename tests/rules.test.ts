@@ -18,6 +18,8 @@ import {
   endActivation,
   attackSide,
   endPhase,
+  drainEvents,
+  roundsToShuffle,
   previewAttacks,
   getUnit,
   grantXp,
@@ -145,6 +147,34 @@ describe('lances', () => {
     expect(tank.stamina).toBe(CLASSES.tank.stamina - 2);
     expect(resolveTempo(s, cs, 'finta', 'golpe').def).toBe('esperar');
     expect(cs.done).toBe(true);
+  });
+});
+
+describe('cristais', () => {
+  it('a cada 3 rodadas trocam de lugar, espelhados e em casas livres, com as cargas', () => {
+    const s = game();
+    const before = s.nodes.map((n) => ({ ...n }));
+    s.nodes[0].charges = 1;
+    expect(roundsToShuffle(s)).toBe(3);
+    while (s.round < 3) endPhase(s);
+    expect(roundsToShuffle(s)).toBe(1);
+    expect(s.nodes.map((n) => [n.x, n.y])).toEqual(before.map((n) => [n.x, n.y]));
+    drainEvents(s);
+    endPhase(s);
+    endPhase(s);
+    expect(s.round).toBe(4);
+    const portals = drainEvents(s).filter((e) => e.kind === 'portal');
+    expect(portals.length).toBe(s.nodes.length);
+    for (let i = 0; i < s.nodes.length; i++) {
+      const n = s.nodes[i];
+      expect([n.x, n.y]).not.toEqual([before[i].x, before[i].y]);
+      expect(['planicie', 'no_verde', 'no_roxo', 'no_laranja']).toContain(s.terrain[n.y][n.x]);
+      // O par espelhado continua espelhado.
+      expect(s.nodes.some((m) => m.color === n.color && m.x === s.width - 1 - n.x && m.y === s.height - 1 - n.y)).toBe(true);
+    }
+    expect(new Set(s.nodes.map((n) => `${n.x},${n.y}`)).size).toBe(s.nodes.length);
+    expect(Math.min(...s.nodes.map((n) => n.charges))).toBeGreaterThanOrEqual(1);
+    expect(roundsToShuffle(s)).toBe(3);
   });
 });
 

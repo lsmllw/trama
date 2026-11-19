@@ -57,6 +57,23 @@ export interface Highlights {
   previews: AttackPreview[];
 }
 
+/** Cristal trocando de lugar por um wormhole. */
+interface Warp {
+  from: Pos;
+  to: Pos;
+  color: keyof typeof NODE_COLOR;
+  t0: number;
+}
+/** Tempos da animação do wormhole (ms desde o início): vórtices [abre, aberto, fecha, fechado]. */
+const WARP = {
+  sinkVoid: [0, 260, 820, 1060],
+  sink: [180, 860],
+  emergeVoid: [760, 1020, 1500, 1760],
+  emerge: [980, 1560],
+  total: 1800,
+  stagger: 110,
+} as const;
+
 interface FloatText {
   x: number;
   y: number;
@@ -88,6 +105,7 @@ export class Renderer {
   private floats: FloatText[] = [];
   private flashes: Flash[] = [];
   private shots: Shot[] = [];
+  private warps: Warp[] = [];
   private ox: number;
   private oy: number;
   anim: MoveAnim | null = null;
@@ -177,6 +195,11 @@ export class Renderer {
       else if (e.kind === 'impacto') this.flashes.push({ cells: e.cells, t0: now });
       else if (e.kind === 'tiro') this.shots.push({ from: e.from, to: e.to, t0: now });
       else if (e.kind === 'texto') this.floats.push({ x: e.x, y: e.y, text: e.text, color: e.color, t0: now + 100 });
+      else if (e.kind === 'portal') {
+        // Um cristal depois do outro, para dar para acompanhar.
+        const n = this.warps.filter((w) => w.t0 >= now).length;
+        this.warps.push({ from: e.from, to: e.to, color: e.color, t0: now + n * WARP.stagger });
+      }
     }
   }
 
@@ -221,6 +244,7 @@ export class Renderer {
     fill(h.abilityTargets, 'rgba(180, 120, 255, 0.35)');
     outline(h.abilityTargets, 'rgba(210, 165, 255, 0.95)');
     this.drawStrikes(s, now);
+    this.drawWarpVoids(s, now);
     this.drawMines(s, h);
     if (h.hover) {
       const q = this.quad(h.hover.x, h.hover.y, this.elev(s, h.hover.x, h.hover.y));
@@ -738,6 +762,7 @@ export class Renderer {
       }
     }
     for (const n of s.nodes) items.push({ depth: at(n.x + 0.5, n.y + 0.5), draw: () => this.drawNode(s, n.x, n.y, n.color, n.charges, now) });
+    for (const w of this.warps) items.push({ depth: at(w.from.x + 0.5, w.from.y + 0.5), draw: () => this.drawWarpGhost(s, w, now) });
     for (const b of [s.bases.azul, s.bases.vermelho]) items.push({ depth: at(b.x + 0.5, b.y + 0.6), draw: () => this.drawBase(b.x, b.y, b.team, b.hp / b.maxHp, b.hp > 0, now) });
     for (const b of s.barricades) items.push({ depth: at(b.x + 0.5, b.y + 0.55), draw: () => this.drawBarricade(b.x, b.y, b.team, b.hp) });
     for (const sm of s.smoke) for (const c of sm.cells) items.push({ depth: at(c.x + 0.5, c.y + 0.9), draw: () => this.drawSmoke(c.x, c.y, now) });
@@ -788,7 +813,8 @@ export class Renderer {
 
   /**
    * Cristal dos nós: uma bipirâmide de 6 faces que gira sem parar e flutua de leve sobre a casa,
-   * com um halo pulsando. A Fonte (prisma) é maior e tem cada face de uma cor.
+   * com um halo pulsando. A Fonte (prisma) é maior e tem cada face de uma cor. Logo depois de
+   * uma troca de lugar, ele só aparece quando sai do wormhole.
    */
   private drawNode(s: GameState, x: number, y: number, color: keyof typeof NODE_COLOR, charges: number, now: number): void {
     const ctx = this.ctx;
@@ -796,45 +822,62 @@ export class Renderer {
     const c = NODE_COLOR[color];
     const prisma = color === 'prisma';
     const occupied = s.units.some((u) => u.alive && u.x === x && u.y === y);
-    const alive = charges > 0;
     const seed = nodeSeed(x, y);
+    // Saindo do wormhole: escondido até a hora, depois cresce subindo do chão.
+    const w = this.warps.find((v) => v.to.x === x && v.to.y === y && now - v.t0 < WARP.total);
+    let grow = 1;
+    if (w) {
+      const p = (now - w.t0 - WARP.emerge[0]) / (WARP.emerge[1] - WARP.emerge[0]);
+      if (p <= 0) return;
+      grow = p >= 1 ? 1 : easeOutBack(p);
+    }
     const bob = occupied ? 0 : Math.sin(now / 650 + seed * 6.28) * 2.6;
     const size = prisma ? 1.3 : 1;
     // Sombra: diminui quando o cristal sobe.
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
     ctx.beginPath();
-    ctx.ellipse(g.x, g.y, 7 * size - bob * 0.4, 3 * size - bob * 0.15, 0, 0, Math.PI * 2);
+    ctx.ellipse(g.x, g.y, Math.max(0.1, (7 * size - bob * 0.4) * Math.min(1, grow)), Math.max(0.1, (3 * size - bob * 0.15) * Math.min(1, grow)), 0, 0, Math.PI * 2);
     ctx.fill();
-    for (let i = 0; i < charges; i++) {
-      ctx.fillStyle = prisma ? `hsl(${(i * 70 + now / 20) % 360}, 80%, 72%)` : c;
-      ctx.fillRect(g.x - 8 + i * 6, g.y + 3, 4, 3);
+    if (grow >= 1) {
+      for (let i = 0; i < charges; i++) {
+        ctx.fillStyle = prisma ? `hsl(${(i * 70 + now / 20) % 360}, 80%, 72%)` : c;
+        ctx.fillRect(g.x - 8 + i * 6, g.y + 3, 4, 3);
+      }
     }
     if (occupied) return;
+    const rise = (1 - Math.min(1, grow)) * 12 * size; // sai de dentro do chão
+    this.drawCrystal(g.x, g.y - 12 * size + bob + rise, color, size * grow, charges > 0, seed, now, w ? 1 + 3 * (1 - Math.min(1, grow)) : 1);
+  }
 
-    const cy = g.y - 12 * size + bob;
+  /** Desenha o cristal com o centro em (gx, cy). `spinMul` acelera o giro (entrando/saindo do wormhole). */
+  private drawCrystal(gx: number, cy: number, color: keyof typeof NODE_COLOR, size: number, alive: boolean, seed: number, now: number, spinMul = 1): void {
+    if (size <= 0.02) return;
+    const ctx = this.ctx;
+    const c = NODE_COLOR[color];
+    const prisma = color === 'prisma';
     ctx.save();
     ctx.globalAlpha = alive ? 1 : 0.4;
     if (alive) {
       // Halo.
       const pulse = 0.5 + 0.5 * Math.sin(now / 420 + seed * 9);
       const r = 13 * size + pulse * 2;
-      const grad = ctx.createRadialGradient(g.x, cy, 1, g.x, cy, r);
+      const grad = ctx.createRadialGradient(gx, cy, 1, gx, cy, r);
       grad.addColorStop(0, hexA(prisma ? '#ffffff' : c, 0.32 + 0.12 * pulse));
       grad.addColorStop(1, hexA(prisma ? '#ffffff' : c, 0));
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(g.x, cy, r, 0, Math.PI * 2);
+      ctx.arc(gx, cy, r, 0, Math.PI * 2);
       ctx.fill();
     }
-    const spin = (now / (alive ? 900 : 2600)) * (seed > 0.5 ? 1 : -1) + seed * 6.28;
+    const spin = ((now / (alive ? 900 : 2600)) * spinMul) * (seed > 0.5 ? 1 : -1) + seed * 6.28;
     const N = 6;
     const R = 6.2 * size;
-    const top = { x: g.x, y: cy - 9 * size };
-    const bot = { x: g.x, y: cy + 8 * size };
+    const top = { x: gx, y: cy - 9 * size };
+    const bot = { x: gx, y: cy + 8 * size };
     const eq = [];
     for (let k = 0; k < N; k++) {
       const a = spin + (k * Math.PI * 2) / N;
-      eq.push({ x: g.x + Math.cos(a) * R, y: cy + Math.sin(a) * R * 0.32, a });
+      eq.push({ x: gx + Math.cos(a) * R, y: cy + Math.sin(a) * R * 0.32, a });
     }
     // Só as faces da frente (metade de baixo da elipse), de trás para a frente.
     const faces: { k: number; mid: number }[] = [];
@@ -873,8 +916,111 @@ export class Renderer {
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
     ctx.beginPath();
-    ctx.arc(top.x, top.y + 1.5, 1.2, 0, Math.PI * 2);
+    ctx.arc(top.x, top.y + 1.5, 1.2 * Math.min(1, size), 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+  }
+
+  /** Cristal sendo engolido pelo wormhole de origem: gira cada vez mais rápido, encolhe e afunda. */
+  private drawWarpGhost(s: GameState, w: Warp, now: number): void {
+    const p = (now - w.t0 - WARP.sink[0]) / (WARP.sink[1] - WARP.sink[0]);
+    if (p >= 1) return;
+    const k = Math.max(0, p);
+    const e = k * k;
+    const g = this.P(w.from.x + 0.5, w.from.y + 0.5, this.elev(s, w.from.x, w.from.y));
+    const size = w.color === 'prisma' ? 1.3 : 1;
+    const swirl = e * 5;
+    const ox = Math.cos(now / 90) * 2.5 * e;
+    this.drawCrystal(g.x + ox, g.y - 12 * size * (1 - e) + Math.sin(swirl) * 1.2, w.color, size * (1 - e * 0.95), true, nodeSeed(w.from.x, w.from.y), now, 1 + 6 * e);
+  }
+
+  /** Vórtices no chão: abre, gira e fecha (na origem e depois no destino). */
+  private drawWarpVoids(s: GameState, now: number): void {
+    this.warps = this.warps.filter((w) => now - w.t0 < WARP.total);
+    for (const w of this.warps) {
+      const t = now - w.t0;
+      this.drawVoid(s, w.from, w.color, t, WARP.sinkVoid, now);
+      this.drawVoid(s, w.to, w.color, t, WARP.emergeVoid, now);
+      this.drawWarpBurst(s, w, t);
+    }
+  }
+
+  private drawVoid(s: GameState, c: Pos, color: keyof typeof NODE_COLOR, t: number, win: readonly [number, number, number, number], now: number): void {
+    const [o0, o1, c0, c1] = win;
+    if (t < o0 || t > c1) return;
+    const open = t < o1 ? easeOutBack((t - o0) / (o1 - o0)) : t > c0 ? 1 - easeIn((t - c0) / (c1 - c0)) : 1;
+    if (open <= 0.01) return;
+    const ctx = this.ctx;
+    const g = this.P(c.x + 0.5, c.y + 0.5, this.elev(s, c.x, c.y));
+    const rim = color === 'prisma' ? `hsl(${(now / 6) % 360}, 90%, 70%)` : NODE_COLOR[color];
+    const r = 13 * open;
+    ctx.save();
+    ctx.translate(g.x, g.y);
+    ctx.scale(1, 0.42);
+    // Brilho de fora.
+    ctx.globalCompositeOperation = 'lighter';
+    const glow = ctx.createRadialGradient(0, 0, r * 0.6, 0, 0, r * 1.7);
+    glow.addColorStop(0, color === 'prisma' ? 'rgba(220,200,255,0.5)' : hexA(NODE_COLOR[color], 0.5));
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 1.7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    // O vazio.
+    const hole = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+    hole.addColorStop(0, '#000000');
+    hole.addColorStop(0.55, 'rgba(12, 4, 24, 0.98)');
+    hole.addColorStop(0.85, 'rgba(60, 20, 90, 0.9)');
+    hole.addColorStop(1, 'rgba(60, 20, 90, 0)');
+    ctx.fillStyle = hole;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    // Espirais girando para dentro.
+    ctx.strokeStyle = rim;
+    ctx.lineCap = 'round';
+    for (let k = 0; k < 4; k++) {
+      const a0 = now / 140 + (k * Math.PI) / 2;
+      ctx.globalAlpha = 0.85;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      for (let i = 0; i <= 14; i++) {
+        const u = i / 14;
+        const rr = r * (0.95 - u * 0.7);
+        const a = a0 + u * 2.6;
+        if (i === 0) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+        else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+      }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.98, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Faíscas espirrando quando o cristal sai do wormhole de destino. */
+  private drawWarpBurst(s: GameState, w: Warp, t: number): void {
+    const p = (t - WARP.emerge[0]) / 520;
+    if (p <= 0 || p >= 1) return;
+    const ctx = this.ctx;
+    const g = this.P(w.to.x + 0.5, w.to.y + 0.5, this.elev(s, w.to.x, w.to.y));
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2 + i * 0.37;
+      const sp = 10 + (i % 4) * 4;
+      const x = g.x + Math.cos(a) * sp * p;
+      const y = g.y - 6 + Math.sin(a) * sp * p * 0.45 - p * 10 * (1 + (i % 3));
+      const alpha = (1 - p) * 0.9;
+      ctx.fillStyle = w.color === 'prisma' ? `hsla(${(i * 40) % 360}, 90%, 75%, ${alpha.toFixed(3)})` : hexA(NODE_COLOR[w.color], alpha);
+      ctx.beginPath();
+      ctx.arc(x, y, 1.3 * (1 - p) + 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 
@@ -885,6 +1031,7 @@ export class Renderer {
     ctx.globalCompositeOperation = 'lighter';
     for (const n of s.nodes) {
       if (n.charges <= 0) continue;
+      if (this.warps.some((w) => w.to.x === n.x && w.to.y === n.y && now - w.t0 < WARP.emerge[1])) continue;
       const seed = nodeSeed(n.x, n.y);
       const g = this.P(n.x + 0.5, n.y + 0.5, this.elev(s, n.x, n.y));
       const prisma = n.color === 'prisma';
@@ -1404,4 +1551,14 @@ function hslHex(h: number, s: number, l: number): string {
   const a = s * Math.min(l, 1 - l);
   const f = (n: number) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
   return `#${((1 << 24) | (f(0) << 16) | (f(8) << 8) | f(4)).toString(16).slice(1)}`;
+}
+
+function easeOutBack(p: number): number {
+  const c = 1.70158;
+  const q = p - 1;
+  return 1 + (c + 1) * q * q * q + c * q * q;
+}
+
+function easeIn(p: number): number {
+  return p * p;
 }
