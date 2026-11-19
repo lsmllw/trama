@@ -82,10 +82,29 @@ export const FORCA: Record<Weight, number> = { leve: 1.0, medio: 1.3, pesado: 1.
 /** Golpe × Golpe: multiplicador do mais pesado e do mais leve (iguais: os dois usam `even`). */
 export const CLASH_TIE = { heavier: 2.0, lighter: 1.0, even: 1.0 };
 /**
- * Bônus por atacar pelo flanco e pelas costas. `mode: 'leitura'` dá Leituras (ver o lance do
- * inimigo antes de escolher) em vez de lances: o peso define os lances, a posição define a informação.
+ * Bônus por atacar pelo flanco e pelas costas. `mode: 'dano'` (atual) multiplica o dano de quem
+ * ataca (SIDE_DAMAGE); `'leitura'` dava Leituras e `'lances'` dava lances (regras antigas, para testes).
  */
-export const SIDE_BONUS: { flanco: number; costas: number; mode: 'lances' | 'leitura' } = { flanco: 1, costas: 2, mode: 'leitura' };
+export const SIDE_BONUS: { flanco: number; costas: number; mode: 'lances' | 'leitura' | 'dano'; readsFor: Weight[] } = {
+  flanco: 1,
+  costas: 2,
+  mode: 'dano',
+  /** No modo 'dano', estes pesos também ganham Leituras pelo flanco (1) e costas (2): os leves leem a brecha. */
+  readsFor: ['leve'],
+};
+type SideKey = 'frente' | 'flanco' | 'costas';
+/** Multiplicador de dano pelo lado do defensor que é atingido (melee e tiro direto). */
+export const SIDE_DAMAGE: Record<SideKey, number> = { frente: 1, flanco: 1.25, costas: 1.5 };
+/** Especialidades de quem ataca: substituem o multiplicador padrão daquele lado. */
+export const SIDE_ATTACKER: Partial<Record<ClassId, Partial<Record<SideKey, number>>>> = {
+  cavaleiro: { flanco: 1.6, costas: 1.7 }, // carga pelo lado
+  espiao: { costas: 2.0 }, // punhalada
+};
+/** Especialidades de quem defende: multiplicam o dano recebido por aquele lado. */
+export const SIDE_DEFENDER: Partial<Record<ClassId, Partial<Record<SideKey, number>>>> = {
+  tank: { frente: 0.75 }, // escudo
+  blindado: { flanco: 1.15, costas: 1.3 }, // blindagem fina nas laterais e na traseira
+};
 /** Stamina gasta por lance. */
 export const LANCE_COST: Record<Weight, number> = { leve: 1, medio: 1, pesado: 2 };
 /** Esquiva passiva contra tiro direto. */

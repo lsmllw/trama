@@ -16,6 +16,7 @@ import {
   log,
   rangedDamage,
   rawDamage,
+  sideOf,
   teamName,
   unitAtq,
   unitName,
@@ -34,6 +35,7 @@ import {
   MINE_DAMAGE,
   MINE_VEHICLE_MULT,
   NODE_CHARGES,
+  OLEO_ATQ,
   RUN_BONUS,
   RUN_COST,
   STAMINA_REGEN,
@@ -58,12 +60,13 @@ import {
   reachable,
   unitAt,
 } from './grid';
+import type { Side } from './grid';
 import { DEPLOY_SLOTS, MAP_VAU, parseMap } from './map';
 import { nextRandom } from './rng';
-import { startConfronto } from './confronto';
+import { hitDamage, startConfronto } from './confronto';
 import type { ConfrontoState } from './confronto';
 import { otherTeam, TEAMS } from './types';
-import type { Base, ClassId, Dir, GameState, ItemId, NodeColor, Pos, Team, Unit } from './types';
+import type { Base, ClassId, GameState, ItemId, NodeColor, Pos, Team, Unit } from './types';
 
 export interface NewGameOptions {
   azul: ClassId[];
@@ -251,6 +254,49 @@ export function targetsFrom(s: GameState, u: Unit, from: Pos, opts: { moved: boo
   return out;
 }
 
+export interface AttackPreview {
+  x: number;
+  y: number;
+  kind: 'melee' | 'tiro' | 'base';
+  /** Lado do defensor atingido (null para a Base). */
+  side: Side | null;
+  /** Multiplicador do lado (1 = sem bônus). */
+  mult: number;
+  /** Corpo a corpo: dano de um acerto ×1 no Confronto. Tiro e Base: dano exato. */
+  dmg: number;
+}
+
+/**
+ * Prévia do dano de cada ataque possível com a unidade em `from` (a casa atual ou a que o jogador
+ * está escolhendo para andar), já com o lado de onde o golpe vem, o Óleo e as especialidades.
+ */
+export function previewAttacks(s: GameState, u: Unit, from: Pos, moved: boolean): AttackPreview[] {
+  const out: AttackPreview[] = [];
+  const oil = u.oil ? OLEO_ATQ : 0;
+  const atq = unitAtq(u) + oil;
+  for (const t of targetsFrom(s, u, from, { moved })) {
+    if (t.kind === 'melee' || t.kind === 'tiro') {
+      const e = getUnit(s, t.unitId);
+      const sd = sideOf(u, from, e);
+      let dmg: number;
+      if (t.kind === 'melee') {
+        const keep = u.tempAtq;
+        u.tempAtq = oil;
+        dmg = hitDamage(s, u, e, 1, sd.mult);
+        u.tempAtq = keep;
+      } else {
+        dmg = rangedDamage(s, atq, CLASSES[u.cls].ranged!.mult, e, sd.mult);
+      }
+      out.push({ x: e.x, y: e.y, kind: t.kind, side: sd.side, mult: sd.mult, dmg });
+    } else if (t.kind === 'meleeBase' || t.kind === 'tiroBase') {
+      const b = s.bases[t.team];
+      const mult = t.kind === 'meleeBase' ? BASE_MELEE_MULT : CLASSES[u.cls].ranged!.mult;
+      out.push({ x: b.x, y: b.y, kind: 'base', side: null, mult: 1, dmg: rawDamage(atq, mult, b.armadura) });
+    }
+  }
+  return out;
+}
+
 export function currentTargets(s: GameState): Target[] {
   const a = s.activation;
   if (!a || a.hasActed) return [];
@@ -365,9 +411,19 @@ export function run(s: GameState): void {
   a.ran = true;
 }
 
-export function rotate(s: GameState, dir: Dir): void {
-  const u = currentUnit(s);
-  if (u) u.facing = dir;
+/**
+ * Ninguém escolhe para onde virar: no fim da fase do seu time, cada unidade se vira para o inimigo
+ * mais próximo (no empate, mantém a direção se ela já aponta para um deles). Flanquear é chegar por
+ * um lado diferente do inimigo que ela está encarando.
+ */
+export function faceNearestEnemy(s: GameState, u: Unit): void {
+  if (!u.alive) return;
+  const enemies = aliveUnits(s, otherTeam(u.team));
+  if (!enemies.length) return;
+  const best = Math.min(...enemies.map((e) => manhattan(u, e)));
+  const nearest = enemies.filter((e) => manhattan(u, e) === best);
+  if (nearest.some((e) => dirFromTo(u, e) === u.facing)) return;
+  u.facing = dirFromTo(u, nearest[0]);
 }
 
 export function requireAction(s: GameState): { a: NonNullable<GameState['activation']>; u: Unit } {
@@ -416,10 +472,11 @@ export function attackRanged(s: GameState, targetId: string): number {
   a.hasActed = true;
   const r = CLASSES[u.cls].ranged!;
   const target = getUnit(s, targetId);
-  const dmg = rangedDamage(s, unitAtq(u) + consumeOil(u), r.mult, target);
+  const sd = sideOf(u, u, target);
+  const dmg = rangedDamage(s, unitAtq(u) + consumeOil(u), r.mult, target, sd.mult);
   u.facing = dirFromTo(u, target);
   s.events.push({ kind: 'tiro', from: { x: u.x, y: u.y }, to: { x: target.x, y: target.y } });
-  log(s, `${unitName(u)} atira em ${unitName(target)}: ${dmg} de dano.`);
+  log(s, `${unitName(u)} atira em ${unitName(target)}${sd.side === 'frente' ? '' : ` pelo ${sd.side}`}: ${dmg} de dano.`);
   hitUnit(s, target, dmg, u);
   grantXp(s, u, XP_HIT);
   checkVictory(s);
@@ -561,6 +618,7 @@ export function endPhase(s: GameState): void {
     u.activated = true;
     u.ready = true;
   }
+  for (const u of aliveUnits(s, s.activeTeam)) faceNearestEnemy(s, u);
   s.smoke = s.smoke.filter((sm) => sm.untilPhase > s.phase);
 
   const endsRound = s.activeTeam !== s.startingTeam;

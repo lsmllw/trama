@@ -16,7 +16,9 @@ import {
   DEPLOY_SLOTS,
   destinations,
   endActivation,
+  attackSide,
   endPhase,
+  previewAttacks,
   getUnit,
   grantXp,
   hitDamage,
@@ -87,17 +89,47 @@ describe('matriz do Confronto', () => {
 });
 
 describe('lances', () => {
-  it('o peso define os lances; flanco e costas dão Leitura, não lances', () => {
+  it('o peso define os lances; o lado muda o dano, não os lances', () => {
     const s = game();
     const tank = find(s, 'azul', 'tank');
     const cav = find(s, 'vermelho', 'cavaleiro');
-    face(s, cav, tank);
-    expect(countLances(s, cav, tank).def.lances).toBe(1);
-    expect(countLances(s, cav, tank).atk).toMatchObject({ lances: 2, reads: 0 });
+    for (const side of ['frente', 'flanco', 'costas'] as const) {
+      face(s, cav, tank, side);
+      expect(countLances(s, cav, tank).def.lances).toBe(1);
+      expect(countLances(s, cav, tank).atk).toMatchObject({ lances: 2, reads: 0 });
+    }
+  });
+  it('flanco e costas multiplicam o dano, com especialidades por classe', () => {
+    const s = game();
+    const tank = find(s, 'azul', 'tank');
+    const cav = find(s, 'vermelho', 'cavaleiro');
+    const esp = find(s, 'vermelho', 'espadachim');
+    const spy = find(s, 'vermelho', 'espiao') ?? esp;
+    const mult = (a: Unit, side: 'frente' | 'flanco' | 'costas') => {
+      face(s, a, tank, side);
+      return startConfronto(s, a.id, tank.id).sideMult;
+    };
+    expect(mult(esp, 'frente')).toBeCloseTo(0.75); // escudo do Tank
+    expect(mult(esp, 'flanco')).toBeCloseTo(1.25);
+    expect(mult(esp, 'costas')).toBeCloseTo(1.5);
+    expect(mult(cav, 'flanco')).toBeCloseTo(1.6);
+    expect(mult(cav, 'costas')).toBeCloseTo(1.7);
+    if (spy.cls === 'espiao') expect(mult(spy, 'costas')).toBeCloseTo(2);
+    // A prévia mostra o mesmo número que o Confronto aplica num acerto ×1.
     face(s, cav, tank, 'flanco');
-    expect(countLances(s, cav, tank).atk).toMatchObject({ lances: 2, reads: 1 });
+    const pv = previewAttacks(s, cav, cav, false).find((p) => p.kind === 'melee')!;
+    expect(pv).toMatchObject({ side: 'flanco', dmg: hitDamage(s, cav, tank, 1, 1.6) });
+  });
+  it('no fim da fase cada unidade encara o inimigo mais próximo', () => {
+    const s = game();
+    const tank = find(s, 'azul', 'tank');
+    const cav = find(s, 'vermelho', 'cavaleiro');
     face(s, cav, tank, 'costas');
-    expect(countLances(s, cav, tank).atk).toMatchObject({ lances: 2, reads: 2 });
+    expect(attackSide(tank, cav)).toBe('costas');
+    s.activeTeam = 'azul';
+    s.activation = null;
+    endPhase(s);
+    expect(attackSide(tank, cav)).toBe('frente');
   });
   it('exemplo do GDD: Finta na Recuperação causa 3, Golpe do Tank causa 16', () => {
     const s = game();
@@ -107,7 +139,8 @@ describe('lances', () => {
     expect(hitDamage(s, esp, tank, 1.5)).toBe(3);
     expect(hitDamage(s, tank, esp, 2.0)).toBe(16);
     const cs = startConfronto(s, esp.id, tank.id);
-    expect(resolveTempo(s, cs, 'finta', 'esperar').defTook).toBe(3);
+    // De frente, o escudo do Tank corta 25%: 3,5 × 0,75 → 2.
+    expect(resolveTempo(s, cs, 'finta', 'esperar').defTook).toBe(2);
     resolveTempo(s, cs, 'guarda', 'golpe');
     expect(tank.stamina).toBe(CLASSES.tank.stamina - 2);
     expect(resolveTempo(s, cs, 'finta', 'golpe').def).toBe('esperar');

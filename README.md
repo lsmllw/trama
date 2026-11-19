@@ -24,7 +24,13 @@ npm run tune                   # compara variações de números (edite scripts/
 - **Confronto (corpo a corpo):** 3 tempos. Leve tem 3 lances, Médio 2, Pesado 1, mas o lance do pesado bate mais forte (×1,6).
   - Golpe vence Finta · Guarda vence Golpe · Finta vence Guarda e quem espera.
   - Esperar não gasta lance; bloqueia Golpe e perde para Finta.
-  - **O peso define os lances; a posição define a informação.** Atacar pelo flanco dá 1 **Leitura**, pelas costas 2 (ver o lance do inimigo antes de escolher). Lance acima de 3 também vira Leitura.
+  - **O peso define os lances.** Lance acima de 3 vira **Leitura** (ver o lance do inimigo antes de escolher).
+- **Lados e direção:** ninguém vira à mão. No fim da fase do seu time, cada unidade encara o inimigo mais próximo (a setinha da peça mostra para onde); quem é atacado num Confronto se vira para o atacante. Dá para atacar por qualquer lado, mas o lado conta:
+  - Flanco: dano ×1,25. Costas: dano ×1,5 (vale no corpo a corpo e no tiro direto).
+  - Os leves (Espadachim, Morteiro, Bombardeiro, Médico, Espião) ainda ganham Leituras: 1 pelo flanco, 2 pelas costas.
+  - Especialidades: Cavaleiro ×1,6 no flanco e ×1,7 nas costas; Espião ×2 nas costas; o escudo do Tank corta 25% do dano pela frente; o Blindado leva +15% pelo flanco e +30% pela traseira.
+  - O alcance de cada classe continua: Atirador e artilharia não atacam colados, o Canhão não atira depois de andar.
+- **Prévia de dano:** ao escolher onde andar, uma etiqueta sobre cada inimigo atacável mostra o dano que você causaria daquela casa e por qual lado (corpo a corpo: por acerto ×1 no Confronto; tiro e Base: dano exato). Parado sobre o alvo, a dica embaixo do tabuleiro detalha.
   - Quem perde para uma Finta fica **Exposto**: no tempo seguinte, escolhe primeiro e o outro vê.
 - **Prontidão (!):** quem não agiu na ativação ganha +1 lance ao defender.
 - **Stamina** (barra amarela): lances, Correr e Cura gastam; volta 3 por rodada. Com 0, a unidade fica Exausta.
@@ -54,7 +60,6 @@ npm run tune                   # compara variações de números (edite scripts/
 | Coletar / usar item | botões no painel | — |
 | Encerrar a fase | botão | E |
 | Correr (+2 casas, 2 ST) | botão | R |
-| Virar a unidade | setas no painel | Shift + ← ↑ → ↓ |
 | Lances no Confronto | botões | 1 Golpe · 2 Guarda · 3 Finta · 4 Esperar · L Leitura · Z fecha |
 
 ## Estrutura
@@ -82,17 +87,20 @@ O núcleo não conhece a tela: a mesma lógica roda no navegador, nos testes e n
 
 Taxa de vitória dos times que tinham cada classe (1500 partidas com times sorteados). A faixa saudável é 45% a 55%.
 
-| Classe | No início | Agora |
-| --- | --- | --- |
-| Blindado | 66,8% | ~56% |
-| Cavaleiro | 60,0% | ~56% |
-| Atirador | 55,4% | ~56% |
-| Bombardeiro | 46,9% | ~54% |
-| Morteiro | 39,8% | ~46% |
-| Espião | 41,9% | ~47% |
-| Canhão | 48,2% | ~41% |
+| Classe | No início | Lados por Leitura | Agora (lados por dano) |
+| --- | --- | --- | --- |
+| Blindado | 66,8% | 54% | 57% |
+| Cavaleiro | 60,0% | 55% | 50% |
+| Atirador | 55,4% | 55% | 53% |
+| Espadachim | — | 47% | 50% |
+| Bombardeiro | 46,9% | 54% | 52% |
+| Morteiro | 39,8% | 41% | 43% |
+| Espião | 41,9% | 44% | 50% |
+| Canhão | 48,2% | 46% | 45% |
 
-Arquétipos (8 times fixos, cada par jogando dos dois lados): o time com dois Blindados caiu de **91% para cerca de 65%**, e o Antiblindado (dois Bombardeiros) vence os Blindados em cerca de 60% dos confrontos diretos. O mais fraco é a Artilharia (~36%): o mapa novo tem muita floresta, que dá cobertura contra tiros.
+Arquétipos (8 times fixos, cada par jogando dos dois lados): o time com dois Blindados caiu de **91% para cerca de 61%**, e o Antiblindado (dois Bombardeiros) vence os Blindados em 57% dos confrontos diretos. O mais fraco continua a Artilharia (~28%): o mapa tem muita floresta, que dá cobertura contra tiros.
+
+Na troca de Leituras por dano, só o dano deixava os leves fracos (Infiltração, com dois Espiões, caía para 13%) e o Blindado forte demais. Por isso os leves mantêm as Leituras de lado e a traseira do Blindado ficou vulnerável (comparação em `npm run tune`).
 
 O que mudou para chegar aqui:
 
@@ -101,7 +109,7 @@ O que mudou para chegar aqui:
 - Blindado com MOV 3 e só terreno liso; minas e granada antitanque do Bombardeiro. No mapa novo, o Blindado só cruza o rio pela Fonte, o melhor lugar para minas.
 - Números: Atirador ATQ 5, Cavaleiro ATQ 7, Canhão ATQ 9, Morteiro ATQ 8 e área ×2,2, Mecânico ATQ 6, Construtor ATQ 7, Espião ATQ 8 e HP 20; Reparo do Mecânico vale para qualquer aliado.
 
-As partidas duram cerca de 16 rodadas; ~78% terminam por eliminação ou Base destruída, o resto por pontos na rodada 20.
+As partidas duram cerca de 15 rodadas; ~78% terminam por eliminação ou Base destruída, o resto por pontos na rodada 20.
 
 ## O que ainda falta
 

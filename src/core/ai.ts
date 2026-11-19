@@ -2,7 +2,7 @@
 // com ruído conforme a dificuldade. No Confronto, joga uma estratégia mista
 // que aprende com o histórico de lances do oponente.
 
-import { aliveUnits, effectiveArmor, rawDamage, rangedDamage, unitAtq } from './combat';
+import { aliveUnits, effectiveArmor, rawDamage, rangedDamage, sideMultiplier, sideOf, unitAtq } from './combat';
 import {
   ANTITANK,
   AREA_HEAL,
@@ -34,7 +34,6 @@ import {
   endActivation,
   heal,
   moveTo,
-  rotate,
   run,
   targetsFrom,
   useItem,
@@ -42,7 +41,7 @@ import {
 import type { Target } from './game';
 import { abilityBlock, abilityOf, abilityTargets, currentAbilityTargets, useAbility } from './abilities';
 import type { AbilityTarget } from './abilities';
-import { canSpend, clash, countLances, finishConfronto, hitDamage, resolveTempo, sideUnit, useRead } from './confronto';
+import { canSpend, clash, confrontoHit, countLances, finishConfronto, hitDamage, resolveTempo, sideUnit, useRead } from './confronto';
 import type { ConfrontoState, Lance, SideKey } from './confronto';
 import { otherTeam } from './types';
 import type { GameState, NodeColor, Pos, Team, Unit } from './types';
@@ -172,7 +171,7 @@ function estimateMelee(s: GameState, u: Unit, from: Pos, target: Unit, bonusLanc
   u.y = from.y;
   const c = countLances(s, u, target, bonusLances);
   u.tempAtq = bonusAtq + (u.oil ? OLEO_ATQ : 0);
-  const hitA = hitDamage(s, u, target, 1.75);
+  const hitA = hitDamage(s, u, target, 1.75, sideMultiplier(u, target, c.side));
   u.tempAtq = 0;
   const hitD = hitDamage(s, target, u, 1.75);
   u.x = ox;
@@ -228,7 +227,7 @@ function actionScore(s: GameState, u: Unit, from: Pos, t: Target): number {
     }
     case 'tiro': {
       const target = getUnit(s, t.unitId);
-      const dmg = rangedDamage(s, atq, def.ranged!.mult, target);
+      const dmg = rangedDamage(s, atq, def.ranged!.mult, target, sideOf(u, from, target).mult);
       return dmg * 1.1 + (dmg >= target.hp ? 12 + unitValue(target) : 0);
     }
     case 'barricada':
@@ -482,8 +481,8 @@ export function chooseLance(
     for (const [o, p] of dist) {
       if (p <= 0) continue;
       const c = clash(mine, o, wMe, wThem);
-      const dealt = c.aHit ? hitDamage(s, me, them, c.aHit) : 0;
-      const taken = c.bHit ? hitDamage(s, them, me, c.bHit) : 0;
+      const dealt = c.aHit ? confrontoHit(s, cs, me, them, c.aHit) : 0;
+      const taken = c.bHit ? confrontoHit(s, cs, them, me, c.bHit) : 0;
       v += p * (dealt - taken * 0.9);
     }
     return v;
@@ -624,18 +623,7 @@ export function executePlan(s: GameState, plan: Plan, onConfronto: (cs: Confront
   const cs = getUnit(s, plan.unitId).alive ? performAction(s, plan) : null;
   if (cs) onConfronto(cs);
   if (s.winner || !s.activation) return;
-  faceNearestEnemy(s, plan.unitId);
   endActivation(s);
-}
-
-/** Antes de encerrar, vira para o inimigo mais próximo (não dar as costas). */
-export function faceNearestEnemy(s: GameState, unitId: string): void {
-  const u = getUnit(s, unitId);
-  if (!u.alive) return;
-  const enemies = aliveUnits(s, otherTeam(u.team));
-  if (!enemies.length) return;
-  const nearest = enemies.reduce((a, b) => (manhattan(u, a) <= manhattan(u, b) ? a : b));
-  if (s.activation?.unitId === unitId) rotate(s, dirFromTo(u, nearest));
 }
 
 /** Partida inteira IA × IA. Devolve o estado final. */

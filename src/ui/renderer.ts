@@ -5,7 +5,7 @@
 
 import { CLASSES, strikeCountdown } from '../core';
 import { drawClassIcon } from './icons';
-import type { Dir, GameEvent, GameState, Pos, Team, Terrain, Unit } from '../core';
+import type { AttackPreview, Dir, GameEvent, GameState, Pos, Team, Terrain, Unit } from '../core';
 
 /**
  * Eixos da projeção (pixels por casa): andar +1 em x vai para a direita e um pouco para cima;
@@ -67,6 +67,8 @@ export interface Highlights {
   hover: Pos | null;
   /** O cursor está sendo movido pelo teclado (desenho mais forte). */
   kbCursor: boolean;
+  /** Dano previsto sobre cada alvo atacável (da casa atual ou da casa de movimento escolhida). */
+  previews: AttackPreview[];
 }
 
 interface FloatText {
@@ -245,8 +247,64 @@ export class Renderer {
     this.drawLevelGlows(s, now);
 
     this.drawObjects(s, h, now);
+    this.drawNodeSparks(s, now);
     this.drawEffects(s, now);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.drawPreviews(s, h);
+  }
+
+  /** Etiquetas de dano previsto sobre os alvos (em pixels de tela, sempre legíveis). */
+  private drawPreviews(s: GameState, h: Highlights): void {
+    if (!h.previews.length) return;
+    const ctx = this.ctx;
+    const { z, tx, ty } = this.cam;
+    for (const p of h.previews) {
+      const lift = p.kind === 'base' ? 58 : 50;
+      const w = this.P(p.x + 0.5, p.y + 0.5, this.elev(s, p.x, p.y) + lift);
+      const sx = w.x * z + tx;
+      const sy = w.y * z + ty;
+      const tone =
+        p.kind === 'base' ? '#ff8a7a' : p.mult < 1 ? '#8fb3ff' : p.side === 'costas' ? '#ff8a3d' : p.side === 'flanco' ? '#ffd25a' : '#e6e6ee';
+      const main = `${p.kind === 'tiro' ? '◎' : p.kind === 'base' ? '⚑' : '⚔'} ${p.dmg}`;
+      const tag =
+        p.kind === 'base'
+          ? 'Base'
+          : p.mult < 1
+            ? `escudo ×${fmt(p.mult)}`
+            : p.side === 'frente'
+              ? p.kind === 'melee' ? 'por acerto' : 'frente'
+              : `${p.side} ×${fmt(p.mult)}`;
+      ctx.font = 'bold 13px system-ui, sans-serif';
+      const mw = ctx.measureText(main).width;
+      ctx.font = '600 10px system-ui, sans-serif';
+      const tw = ctx.measureText(tag).width;
+      const bw = Math.max(mw, tw) + 14;
+      const bh = 32;
+      const x0 = sx - bw / 2;
+      const y0 = sy - bh - 6;
+      ctx.fillStyle = 'rgba(18, 16, 24, 0.9)';
+      ctx.strokeStyle = tone;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(x0, y0, bw, bh, 6);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx - 5, y0 + bh);
+      ctx.lineTo(sx + 5, y0 + bh);
+      ctx.lineTo(sx, y0 + bh + 6);
+      ctx.closePath();
+      ctx.fillStyle = tone;
+      ctx.fill();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = tone;
+      ctx.font = 'bold 13px system-ui, sans-serif';
+      ctx.fillText(main, sx, y0 + 11);
+      ctx.font = '600 10px system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(230, 230, 240, 0.85)';
+      ctx.fillText(tag, sx, y0 + 24);
+    }
   }
 
   // ---------- Câmera ----------
@@ -679,7 +737,7 @@ export class Renderer {
         else if (t === 'ruina') items.push({ depth: at(x + 0.5, y + 0.5), draw: () => this.drawRuin(x, y) });
       }
     }
-    for (const n of s.nodes) items.push({ depth: at(n.x + 0.5, n.y + 0.5), draw: () => this.drawNode(s, n.x, n.y, n.color, n.charges) });
+    for (const n of s.nodes) items.push({ depth: at(n.x + 0.5, n.y + 0.5), draw: () => this.drawNode(s, n.x, n.y, n.color, n.charges, now) });
     for (const b of [s.bases.azul, s.bases.vermelho]) items.push({ depth: at(b.x + 0.5, b.y + 0.6), draw: () => this.drawBase(b.x, b.y, b.team, b.hp / b.maxHp, b.hp > 0) });
     for (const b of s.barricades) items.push({ depth: at(b.x + 0.5, b.y + 0.55), draw: () => this.drawBarricade(b.x, b.y, b.team, b.hp) });
     for (const sm of s.smoke) for (const c of sm.cells) items.push({ depth: at(c.x + 0.5, c.y + 0.9), draw: () => this.drawSmoke(c.x, c.y, now) });
@@ -728,40 +786,133 @@ export class Renderer {
     this.box(x + 0.55, y + 0.2, x + 0.85, y + 0.55, 0, 16, '#807e86', '#56545c', '#6a6870');
   }
 
-  private drawNode(s: GameState, x: number, y: number, color: keyof typeof NODE_COLOR, charges: number): void {
+  /**
+   * Cristal dos nós: uma bipirâmide de 6 faces que gira sem parar e flutua de leve sobre a casa,
+   * com um halo pulsando. A Fonte (prisma) é maior e tem cada face de uma cor.
+   */
+  private drawNode(s: GameState, x: number, y: number, color: keyof typeof NODE_COLOR, charges: number, now: number): void {
     const ctx = this.ctx;
     const g = this.P(x + 0.5, y + 0.5, this.elev(s, x, y));
     const c = NODE_COLOR[color];
+    const prisma = color === 'prisma';
     const occupied = s.units.some((u) => u.alive && u.x === x && u.y === y);
-    const lift = occupied ? 0 : 1;
-    ctx.globalAlpha = charges > 0 ? 0.95 : 0.35;
+    const alive = charges > 0;
+    const seed = nodeSeed(x, y);
+    const bob = occupied ? 0 : Math.sin(now / 650 + seed * 6.28) * 2.6;
+    const size = prisma ? 1.3 : 1;
+    // Sombra: diminui quando o cristal sobe.
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
     ctx.beginPath();
-    ctx.ellipse(g.x, g.y, 7, 3, 0, 0, Math.PI * 2);
+    ctx.ellipse(g.x, g.y, 7 * size - bob * 0.4, 3 * size - bob * 0.15, 0, 0, Math.PI * 2);
     ctx.fill();
-    if (lift) {
-      // Cristal em pé.
-      ctx.fillStyle = c;
-      ctx.beginPath();
-      ctx.moveTo(g.x, g.y - 18);
-      ctx.lineTo(g.x + 6, g.y - 8);
-      ctx.lineTo(g.x, g.y - 1);
-      ctx.lineTo(g.x - 6, g.y - 8);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.35)';
-      ctx.beginPath();
-      ctx.moveTo(g.x, g.y - 18);
-      ctx.lineTo(g.x - 6, g.y - 8);
-      ctx.lineTo(g.x, g.y - 8);
-      ctx.closePath();
-      ctx.fill();
-    }
     for (let i = 0; i < charges; i++) {
-      ctx.fillStyle = c;
+      ctx.fillStyle = prisma ? `hsl(${(i * 70 + now / 20) % 360}, 80%, 72%)` : c;
       ctx.fillRect(g.x - 8 + i * 6, g.y + 3, 4, 3);
     }
-    ctx.globalAlpha = 1;
+    if (occupied) return;
+
+    const cy = g.y - 12 * size + bob;
+    ctx.save();
+    ctx.globalAlpha = alive ? 1 : 0.4;
+    if (alive) {
+      // Halo.
+      const pulse = 0.5 + 0.5 * Math.sin(now / 420 + seed * 9);
+      const r = 13 * size + pulse * 2;
+      const grad = ctx.createRadialGradient(g.x, cy, 1, g.x, cy, r);
+      grad.addColorStop(0, hexA(prisma ? '#ffffff' : c, 0.32 + 0.12 * pulse));
+      grad.addColorStop(1, hexA(prisma ? '#ffffff' : c, 0));
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(g.x, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const spin = (now / (alive ? 900 : 2600)) * (seed > 0.5 ? 1 : -1) + seed * 6.28;
+    const N = 6;
+    const R = 6.2 * size;
+    const top = { x: g.x, y: cy - 9 * size };
+    const bot = { x: g.x, y: cy + 8 * size };
+    const eq = [];
+    for (let k = 0; k < N; k++) {
+      const a = spin + (k * Math.PI * 2) / N;
+      eq.push({ x: g.x + Math.cos(a) * R, y: cy + Math.sin(a) * R * 0.32, a });
+    }
+    // Só as faces da frente (metade de baixo da elipse), de trás para a frente.
+    const faces: { k: number; mid: number }[] = [];
+    for (let k = 0; k < N; k++) {
+      const mid = spin + ((k + 0.5) * Math.PI * 2) / N;
+      if (Math.sin(mid) > -0.05) faces.push({ k, mid });
+    }
+    faces.sort((p, q) => Math.sin(p.mid) - Math.sin(q.mid));
+    for (const f of faces) {
+      const e1 = eq[f.k];
+      const e2 = eq[(f.k + 1) % N];
+      const light = 0.5 + 0.5 * Math.cos(f.mid + 2.2); // luz vindo da esquerda
+      const base = prisma ? `hsl(${(f.k * 60 + now / 25) % 360}, 75%, 66%)` : c;
+      for (const [apex, up] of [
+        [top, true],
+        [bot, false],
+      ] as const) {
+        ctx.fillStyle = base;
+        ctx.beginPath();
+        ctx.moveTo(apex.x, apex.y);
+        ctx.lineTo(e1.x, e1.y);
+        ctx.lineTo(e2.x, e2.y);
+        ctx.closePath();
+        ctx.fill();
+        // Sombreado da face: de cima é mais claro; a luz varia conforme o giro.
+        const shadeA = up ? 0.45 * (1 - light) : 0.25 + 0.4 * (1 - light);
+        ctx.fillStyle = `rgba(10, 8, 20, ${shadeA.toFixed(3)})`;
+        ctx.fill();
+        if (up && light > 0.6) {
+          ctx.fillStyle = `rgba(255, 255, 255, ${((light - 0.6) * 0.9).toFixed(3)})`;
+          ctx.fill();
+        }
+      }
+    }
+    // Brilho no topo.
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.beginPath();
+    ctx.arc(top.x, top.y + 1.5, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Partículas brilhantes e sutis subindo dos nós com carga. */
+  private drawNodeSparks(s: GameState, now: number): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const n of s.nodes) {
+      if (n.charges <= 0) continue;
+      const seed = nodeSeed(n.x, n.y);
+      const g = this.P(n.x + 0.5, n.y + 0.5, this.elev(s, n.x, n.y));
+      const prisma = n.color === 'prisma';
+      const count = prisma ? 7 : 4;
+      for (let i = 0; i < count; i++) {
+        const r1 = frac(Math.sin((i + 1) * 12.9898 + seed * 78.233) * 43758.5453);
+        const r2 = frac(Math.sin((i + 1) * 39.346 + seed * 11.135) * 24634.6345);
+        const period = 1700 + r1 * 1300;
+        const t = frac(now / period + r2 + seed);
+        const ang = r1 * Math.PI * 2 + t * 1.2;
+        const rad = 3 + r2 * 6 + t * 3;
+        const px = g.x + Math.cos(ang) * rad;
+        const py = g.y - 6 - t * (22 + r2 * 10) + Math.sin(ang) * rad * 0.32;
+        const a = Math.sin(Math.PI * t) * (0.55 + 0.3 * r1);
+        const col = prisma ? `hsla(${(r1 * 360 + now / 15) % 360}, 90%, 78%, ${a.toFixed(3)})` : hexA(NODE_COLOR[n.color], a);
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(px, py, 0.7 + 0.6 * (1 - t), 0, Math.PI * 2);
+        ctx.fill();
+        // Brilho em cruz nas maiores.
+        if (r2 > 0.6) {
+          ctx.fillStyle = `rgba(255,255,255,${(a * 0.6).toFixed(3)})`;
+          ctx.fillRect(px - 2, py - 0.25, 4, 0.5);
+          ctx.fillRect(px - 0.25, py - 2, 0.5, 4);
+        }
+      }
+    }
+    ctx.restore();
   }
 
   private drawBase(x: number, y: number, team: Team, frac: number, alive: boolean): void {
@@ -1065,3 +1216,20 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
+
+/** Número fixo (0–1) por casa, para cada nó girar e flutuar fora de sincronia. */
+function nodeSeed(x: number, y: number): number {
+  return frac(Math.sin(x * 127.1 + y * 311.7) * 43758.5453);
+}
+
+function frac(v: number): number {
+  return v - Math.floor(v);
+}
+
+/** Cor #rrggbb com transparência. */
+function hexA(hex: string, a: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${Math.max(0, Math.min(1, a)).toFixed(3)})`;
+}
+
+const fmt = (m: number): string => (Math.round(m * 100) / 100).toString().replace('.', ',');

@@ -5,7 +5,7 @@ import {
   chooseLance,
   CLASSES,
   finishConfronto,
-  hitDamage,
+  confrontoHit,
   LANCE_COST,
   LANCE_LABEL,
   otherSide,
@@ -139,7 +139,7 @@ export function openConfronto(ctx: ConfrontoContext): Promise<void> {
       const me = sideUnit(s, cs, playerSide);
       const them = sideUnit(s, cs, aiSide);
       const can = canSpend(s, cs, playerSide) && !cs.done;
-      const dmg = (m: number) => hitDamage(s, me, them, m);
+      const dmg = (m: number) => confrontoHit(s, cs, me, them, m);
       const track = [];
       for (let t = 1; t <= TEMPOS; t++) track.push(h('span', { class: t === cs.tempo && !cs.done ? 'on' : '' }, `Tempo ${t}`));
 

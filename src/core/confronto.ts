@@ -3,7 +3,7 @@
 // Quem não joga lance num tempo fica em Recuperação ("esperar").
 
 import { BASE_LANCES, CLASH_TIE, CLASSES, FORCA, LANCE_COST, MAX_LANCES, SIDE_BONUS, TEMPOS, WEIGHT_RANK, XP_HIT } from './data';
-import { consumeOil, effectiveArmor, grantXp, hitUnit, log, rawDamage, unitAtq, unitName } from './combat';
+import { consumeOil, effectiveArmor, grantXp, hitUnit, log, sideMultiplier, unitAtq, unitName } from './combat';
 import { attackSide, dirFromTo, getUnit, terrainAt } from './grid';
 import type { Side } from './grid';
 import type { GameState, Unit, Weight } from './types';
@@ -44,6 +44,8 @@ export interface ConfrontoState {
   atk: ConfrontoSide;
   def: ConfrontoSide;
   side: Side;
+  /** Multiplicador dos acertos de quem ataca, pelo lado (flanco, costas, especialidades). */
+  sideMult: number;
   /** Tempo atual, de 1 a 3. */
   tempo: number;
   /** Lado Exposto neste tempo: precisa escolher primeiro, e o outro vê. */
@@ -96,7 +98,7 @@ export function countLances(
   if (sideBonus && SIDE_BONUS.mode === 'lances') {
     a += sideBonus;
     atkNotes.push(`${side === 'flanco' ? 'Flanco' : 'Costas'} +${sideBonus}`);
-  } else if (sideBonus) {
+  } else if (sideBonus && (SIDE_BONUS.mode === 'leitura' || SIDE_BONUS.readsFor.includes(wa))) {
     sideReads = sideBonus;
     atkNotes.push(`${side === 'flanco' ? 'Flanco' : 'Costas'}: ${sideBonus} Leitura${sideBonus > 1 ? 's' : ''}`);
   }
@@ -120,6 +122,10 @@ export function countLances(
   if (defender.focus) {
     d += 1;
     defNotes.push('Foco +1');
+  }
+  if (SIDE_BONUS.mode === 'dano') {
+    const m = sideMultiplier(attacker, defender, side);
+    if (m !== 1) atkNotes.push(`${side === 'frente' ? 'Frente' : side === 'flanco' ? 'Flanco' : 'Costas'}: dano ×${fmtMult(m)}`);
   }
 
   const atk = cap(a, atkNotes);
@@ -150,6 +156,7 @@ export function startConfronto(s: GameState, attackerId: string, defenderId: str
     atk: { unitId: attackerId, lances: c.atk.lances, lancesLeft: c.atk.lances, readsLeft: c.atk.reads, notes: c.atk.notes },
     def: { unitId: defenderId, lances: c.def.lances, lancesLeft: c.def.lances, readsLeft: c.def.reads, notes: c.def.notes },
     side: c.side,
+    sideMult: sideMultiplier(attacker, defender, c.side),
     tempo: 1,
     exposed: null,
     results: [],
@@ -217,10 +224,17 @@ export function clash(a: Lance, b: Lance, wa: Weight, wb: Weight): Clash {
   return { aHit: r.bHit, bHit: r.aHit, exposeA: r.exposeB, exposeB: r.exposeA, why: r.why };
 }
 
-/** Dano que um acerto com este multiplicador causaria. */
-export function hitDamage(s: GameState, from: Unit, to: Unit, mult: number): number {
-  return rawDamage(unitAtq(from), mult * FORCA[CLASSES[from.cls].weight], effectiveArmor(s, to));
+/** Dano que um acerto com este multiplicador causaria (`side`: multiplicador do lado atingido). */
+export function hitDamage(s: GameState, from: Unit, to: Unit, mult: number, side = 1): number {
+  return Math.max(1, Math.floor((unitAtq(from) * mult * FORCA[CLASSES[from.cls].weight] - effectiveArmor(s, to)) * side));
 }
+
+/** Dano de um acerto dentro do Confronto: só quem ataca recebe o multiplicador do lado. */
+export function confrontoHit(s: GameState, cs: ConfrontoState, from: Unit, to: Unit, mult: number): number {
+  return hitDamage(s, from, to, mult, from.id === cs.atk.unitId ? cs.sideMult : 1);
+}
+
+export const fmtMult = (m: number): string => (Math.round(m * 100) / 100).toString().replace('.', ',');
 
 /** Resolve o tempo atual com as duas escolhas. Escolhas impossíveis viram "esperar". */
 export function resolveTempo(s: GameState, cs: ConfrontoState, atkChoice: Lance, defChoice: Lance): TempoResult {
@@ -241,8 +255,8 @@ export function resolveTempo(s: GameState, cs: ConfrontoState, atkChoice: Lance,
   }
 
   const c = clash(a, d, CLASSES[atkU.cls].weight, CLASSES[defU.cls].weight);
-  const toDef = c.aHit > 0 ? hitDamage(s, atkU, defU, c.aHit) : 0;
-  const toAtk = c.bHit > 0 ? hitDamage(s, defU, atkU, c.bHit) : 0;
+  const toDef = c.aHit > 0 ? confrontoHit(s, cs, atkU, defU, c.aHit) : 0;
+  const toAtk = c.bHit > 0 ? confrontoHit(s, cs, defU, atkU, c.bHit) : 0;
   hitUnit(s, defU, toDef, atkU);
   hitUnit(s, atkU, toAtk, defU);
 

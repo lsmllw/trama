@@ -1,5 +1,6 @@
-import { ABILITIES, ABILITY_LEVEL, CLASSES, ESQUIVA, LEVEL_ATQ, LEVEL_HP, LEVEL_XP, MAX_LEVEL, OLEO_ATQ, TERRAIN, XP_KILL } from './data';
-import { terrainAt } from './grid';
+import { ABILITIES, ABILITY_LEVEL, CLASSES, ESQUIVA, LEVEL_ATQ, LEVEL_HP, LEVEL_XP, MAX_LEVEL, OLEO_ATQ, SIDE_ATTACKER, SIDE_BONUS, SIDE_DAMAGE, SIDE_DEFENDER, TERRAIN, XP_KILL } from './data';
+import { attackSide, terrainAt } from './grid';
+import type { Side } from './grid';
 import { otherTeam } from './types';
 import type { Base, GameState, Pos, Team, Unit } from './types';
 
@@ -33,12 +34,29 @@ export function rawDamage(atq: number, mult: number, armor: number): number {
   return Math.max(1, Math.floor(atq * mult - armor));
 }
 
-/** Tiro direto: esquiva passiva pelo peso do alvo e −40% com cobertura. */
-export function rangedDamage(s: GameState, atq: number, mult: number, target: Unit): number {
+/** Tiro direto: esquiva passiva pelo peso do alvo, −40% com cobertura e o multiplicador do lado. */
+export function rangedDamage(s: GameState, atq: number, mult: number, target: Unit, side = 1): number {
   const base = atq * mult - effectiveArmor(s, target);
   const dodge = ESQUIVA[CLASSES[target.cls].weight];
   const cover = TERRAIN[terrainAt(s, target.x, target.y)].cover ? 0.4 : 0;
-  return Math.max(1, Math.floor(base * (1 - dodge) * (1 - cover)));
+  return Math.max(1, Math.floor(base * (1 - dodge) * (1 - cover) * side));
+}
+
+/**
+ * Multiplicador de dano pelo lado em que o defensor é atingido (frente, flanco ou costas, pelo
+ * lado para onde ele está virado), com as especialidades de quem ataca e de quem defende.
+ */
+export function sideMultiplier(attacker: Unit, defender: Unit, side: Side): number {
+  if (SIDE_BONUS.mode !== 'dano') return 1;
+  const atk = SIDE_ATTACKER[attacker.cls]?.[side] ?? SIDE_DAMAGE[side];
+  const def = SIDE_DEFENDER[defender.cls]?.[side] ?? 1;
+  return atk * def;
+}
+
+/** Lado e multiplicador de um ataque de `attacker` (estando em `from`) contra `defender`. */
+export function sideOf(attacker: Unit, from: Pos, defender: Unit): { side: Side; mult: number } {
+  const side = attackSide(defender, from);
+  return { side, mult: sideMultiplier(attacker, defender, side) };
 }
 
 export function grantXp(s: GameState, u: Unit, amount: number): void {

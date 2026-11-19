@@ -30,7 +30,6 @@ import {
   endActivation,
   endPhase,
   performAction,
-  faceNearestEnemy,
   getUnit,
   heal,
   ITEMS,
@@ -40,7 +39,7 @@ import {
   newMemory,
   planActivation,
   points,
-  rotate,
+  previewAttacks,
   run,
   RUN_BONUS,
   RUN_COST,
@@ -56,7 +55,7 @@ import {
   useItem,
   WEIGHT_LABEL,
 } from '../core';
-import type { ConfrontoState, Dir, GameState, LanceMemory, NodeColor, Pos, Target, Team, Unit } from '../core';
+import type { ConfrontoState, GameState, LanceMemory, NodeColor, Pos, Target, Team, Unit } from '../core';
 import { openConfronto } from './confronto-modal';
 import { classIconSvg } from './icons';
 import { clear, h } from './dom';
@@ -83,6 +82,8 @@ export class GameView {
   private raf = 0;
   /** Última posição do mouse sobre o tabuleiro (para refazer a casa sob ele quando a câmera desliza). */
   private mouseAt: { x: number; y: number } | null = null;
+  /** A casa destacada veio do mouse (e não do teclado ou da seleção da unidade). */
+  private hoverByMouse = false;
   private el = {
     top: h('div', { class: 'topbar' }),
     side: h('aside', { class: 'side' }),
@@ -140,6 +141,7 @@ export class GameView {
     this.el.canvas.addEventListener('mousemove', (e) => {
       this.renderer.pointer(e.clientX, e.clientY);
       this.mouseAt = { x: e.clientX, y: e.clientY };
+      this.hoverByMouse = true;
       this.kbCursor = false;
       const p = this.renderer.cellAt(e.clientX, e.clientY, this.s);
       if (!p || !this.hover || !same(p, this.hover)) {
@@ -183,7 +185,7 @@ export class GameView {
     const loop = (t: number) => {
       this.renderer.draw(this.s, this.hl, t);
       // A câmera pode deslizar com o mouse parado: a casa sob ele acompanha.
-      if (this.mouseAt && !this.kbCursor) {
+      if (this.mouseAt && this.hoverByMouse && !this.kbCursor) {
         const p = this.renderer.cellAt(this.mouseAt.x, this.mouseAt.y, this.s);
         if (p && (!this.hover || !same(p, this.hover))) {
           this.hover = p;
@@ -218,6 +220,7 @@ export class GameView {
     this.renderer.lockOn(id);
     // O cursor do teclado começa na unidade.
     this.hover = { x: u.x, y: u.y };
+    this.hoverByMouse = false;
     this.afterChange();
   }
 
@@ -229,6 +232,7 @@ export class GameView {
     const x = Math.max(0, Math.min(s.width - 1, start.x + dx));
     const y = Math.max(0, Math.min(s.height - 1, start.y + dy));
     this.hover = { x, y };
+    this.hoverByMouse = false;
     this.kbCursor = true;
     // Escolhendo o movimento, a câmera desliza até a casa; fora disso, só se ela sair da tela.
     if (this.renderer.aiming) this.renderer.aimAt(x, y);
@@ -467,7 +471,6 @@ export class GameView {
       }
       if (s.winner) break;
       if (s.activation) {
-        faceNearestEnemy(s, plan.unitId);
         endActivation(s);
       }
       this.quiet();
@@ -633,9 +636,8 @@ export class GameView {
     if (document.querySelector('.modal-bg')) return;
     if (this.busy) return;
     const k = e.key.toLowerCase();
-    const dirs: Record<string, Dir> = { ArrowUp: 'N', ArrowDown: 'S', ArrowLeft: 'W', ArrowRight: 'E' };
     const steps: Record<string, [number, number]> = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
-    if (steps[e.key] && !e.shiftKey) {
+    if (steps[e.key]) {
       e.preventDefault();
       this.moveCursor(...steps[e.key]);
     } else if (e.key === ' ') {
@@ -655,11 +657,6 @@ export class GameView {
       if (u && u.alive) this.selectOwn(u.id);
     } else if (k === 'e' && this.isPlayerTurn()) {
       this.endPlayerPhase();
-    } else if (dirs[e.key] && e.shiftKey && this.s.activation && this.isPlayerTurn()) {
-      // Shift + setas: virar a unidade.
-      e.preventDefault();
-      rotate(this.s, dirs[e.key]);
-      this.quiet();
     } else if (k === 'r' && this.isPlayerTurn() && canRun(this.s)) {
       run(this.s);
       this.quiet();
@@ -723,6 +720,12 @@ export class GameView {
         hl.moves = destinations(s);
         hl.targets = targets.filter((t) => t.kind !== 'area' && t.kind !== 'cura' && t.kind !== 'coleta');
         hl.heals = targets.filter((t) => t.kind === 'cura');
+        // Dano previsto: da casa de movimento sob o cursor, ou de onde a unidade está.
+        if (!s.activation.hasActed) {
+          const u = getUnit(s, s.activation.unitId);
+          const moveTo = this.hover && hl.moves.some((c) => same(c, this.hover!)) ? this.hover : null;
+          hl.previews = previewAttacks(s, u, moveTo ?? u, s.activation.hasMoved || !!moveTo);
+        }
       }
     }
     this.hl = hl;
@@ -748,6 +751,16 @@ export class GameView {
     if (this.hover) {
       const t = s.terrain[this.hover.y][this.hover.x];
       text += `   [${this.hover.x + 1},${this.hover.y + 1}] ${TERRAIN[t].label}`;
+      const p = this.hl.previews.find((v) => same(v, this.hover!));
+      if (p) {
+        const side = p.side && p.side !== 'frente' ? ` pelo ${p.side} (×${String(Math.round(p.mult * 100) / 100).replace('.', ',')})` : p.mult < 1 ? ' de frente, no escudo' : ' de frente';
+        text +=
+          p.kind === 'melee'
+            ? ` · Confronto${side}: ${p.dmg} por acerto ×1 (Golpe pesado e Finta batem mais)`
+            : p.kind === 'tiro'
+              ? ` · Tiro${side}: ${p.dmg} de dano`
+              : ` · Base: ${p.dmg} de dano`;
+      }
     }
     text += this.renderer?.lockedOn ? '   · Câmera presa (X solta)' : this.renderer?.isHeld ? '   · Câmera parada (X solta)' : '   · Roda: zoom · 0: visão inteira';
     this.el.hint.textContent = text;
@@ -866,17 +879,6 @@ export class GameView {
     const ab = ABILITIES[u.cls];
     const block = abilityBlock(s, u);
     const abilityUsable = !block && abilityTargets(s, u).length > 0;
-    const facing = (dir: Dir, label: string) =>
-      h(
-        'button',
-        {
-          onclick: () => {
-            rotate(s, dir);
-            this.quiet();
-          },
-        },
-        label,
-      );
     const collectButtons: HTMLElement[] = [];
     for (const t of currentTargets(s)) {
       if (t.kind !== 'coleta') continue;
@@ -963,7 +965,6 @@ export class GameView {
         { class: 'actions' },
         h('button', { class: 'primary', disabled: this.busy, onclick: () => this.endUnit() }, 'Confirmar e encerrar (Z)'),
       ),
-      h('div', { class: 'facing' }, 'Virar (Shift + setas):', facing('N', '↑'), facing('W', '←'), facing('S', '↓'), facing('E', '→')),
     );
   }
 
@@ -1026,6 +1027,7 @@ function emptyHighlights(): Highlights {
     activeId: null,
     hover: null,
     kbCursor: false,
+    previews: [],
   };
 }
 
@@ -1039,11 +1041,14 @@ function helpCard(): HTMLElement {
       {},
       h('li', {}, 'Cada time joga uma fase inteira: você move todas as suas unidades, depois a IA move as dela.'),
       h('li', {}, 'Cada unidade: mover e depois 1 ação (atacar, curar, coletar, usar item ou habilidade).'),
-      h('li', {}, 'Teclas 1–5 selecionam suas unidades. Setas movem o cursor pelas casas e Espaço confirma (andar, atacar, mirar). Shift + setas vira a unidade.'),
+      h('li', {}, 'Teclas 1–5 selecionam suas unidades. Setas movem o cursor pelas casas e Espaço confirma (andar, atacar, mirar).'),
       h('li', {}, 'Z confirma e encerra a unidade, X volta. Selecionada, a câmera fica presa nela; X solta.'),
       h('li', {}, 'Vence quem destruir a Base (QG) inimiga ou eliminar todas as unidades. Na rodada 20, decide por pontos.'),
       h('li', {}, 'Corpo a corpo abre o Confronto: 3 tempos. Leve tem 3 lances, Médio 2, Pesado 1 (mas bate mais forte).'),
-      h('li', {}, 'O peso define os lances. Atacar pelo flanco dá 1 Leitura, pelas costas 2 (ver o lance do inimigo antes de escolher). Quem não agiu ganha Prontidão (!): +1 lance ao defender.'),
+      h('li', {}, 'O peso define os lances. Quem não agiu ganha Prontidão (!): +1 lance ao defender.'),
+      h('li', {}, 'Ninguém vira à mão: no fim da fase do seu time, cada unidade encara o inimigo mais próximo (a setinha mostra para onde). Atacar pelo flanco dá ×1,25 de dano, pelas costas ×1,5. Os leves (Espadachim, Morteiro, Bombardeiro, Médico, Espião) ainda ganham Leituras: 1 pelo flanco, 2 pelas costas.'),
+      h('li', {}, 'Especialidades: Cavaleiro ×1,6 no flanco e ×1,7 nas costas; Espião ×2 nas costas; o escudo do Tank corta 25% do dano pela frente; o Blindado leva +15% pelo flanco e +30% pela traseira. Atirador e artilharia não atacam colados.'),
+      h('li', {}, 'Ao escolher onde andar, os números sobre os inimigos mostram o dano que você causaria daquela casa (corpo a corpo: por acerto no Confronto; tiro: dano exato).'),
       h('li', {}, 'O Blindado anda 3 e só em terreno liso (nada de floresta, colina, ruína, lama ou barricada).'),
       h('li', {}, 'O Bombardeiro planta minas desde o level 1 (até 3). Mina causa 8; num Blindado, 16 e ele fica imobilizado. A granada dele ignora a armadura do Blindado.'),
       h('li', {}, 'XP: acertar ou vencer Confronto +1, abater +2, coletar ou curar +1. No level 2 a habilidade da classe é liberada.'),

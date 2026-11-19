@@ -1,7 +1,7 @@
 // Busca de balanceamento: aplica variações nos números e mede a dispersão.
 // Uso: npm run tune  (lento: alguns minutos)
 declare const process: { argv: string[] };
-import { AI_WEIGHTS, ANTITANK, SIDE_BONUS, CLASH_TIE, CLASS_IDS, CLASSES, createGame, FORCA, nextRandom, simulateGame } from '../src/core';
+import { AI_WEIGHTS, ANTITANK, SIDE_ATTACKER, SIDE_BONUS, SIDE_DEFENDER, CLASH_TIE, CLASS_IDS, CLASSES, createGame, FORCA, nextRandom, simulateGame } from '../src/core';
 import type { ClassId, Team } from '../src/core';
 
 const ARCH: Record<string, ClassId[]> = {
@@ -64,6 +64,8 @@ const base = {
   tie: { ...CLASH_TIE },
   antitank: { ...ANTITANK },
   side: { ...SIDE_BONUS },
+  sideAtk: JSON.parse(JSON.stringify(SIDE_ATTACKER)),
+  sideDef: JSON.parse(JSON.stringify(SIDE_DEFENDER)),
   ai: { ...AI_WEIGHTS },
   stats: Object.fromEntries(CLASS_IDS.map((c) => [c, { ...CLASSES[c] }])),
 };
@@ -72,6 +74,10 @@ function reset() {
   Object.assign(CLASH_TIE, base.tie);
   Object.assign(ANTITANK, base.antitank);
   Object.assign(SIDE_BONUS, base.side);
+  for (const k of Object.keys(SIDE_ATTACKER)) delete (SIDE_ATTACKER as Record<string, unknown>)[k];
+  Object.assign(SIDE_ATTACKER, JSON.parse(JSON.stringify(base.sideAtk)));
+  for (const k of Object.keys(SIDE_DEFENDER)) delete (SIDE_DEFENDER as Record<string, unknown>)[k];
+  Object.assign(SIDE_DEFENDER, JSON.parse(JSON.stringify(base.sideDef)));
   Object.assign(AI_WEIGHTS, base.ai);
   for (const c of CLASS_IDS) Object.assign(CLASSES[c], base.stats[c]);
 }
@@ -82,8 +88,9 @@ const C = CLASSES;
 const tweaks: Tweak[] = [
   { name: 'atual', apply: () => {} },
   { name: 'exemplo: Canhão ATQ 10', apply: () => { C.canhao.atq = 10; } },
-  { name: 'exemplo: lados dão lances (regra antiga)', apply: () => { SIDE_BONUS.mode = 'lances'; } },
-  { name: 'exemplo: IA sem medo de morrer', apply: () => { AI_WEIGHTS.deathRisk = 0; } },
+  { name: 'exemplo: Leituras de lado para todos os pesos', apply: () => { SIDE_BONUS.readsFor = ['leve', 'medio', 'pesado']; } },
+  { name: 'exemplo: traseira do Blindado comum', apply: () => { delete SIDE_DEFENDER.blindado; } },
+  { name: 'exemplo: lados dão Leituras, sem dano (regra antiga)', apply: () => { SIDE_BONUS.mode = 'leitura'; } },
 ];
 const only = process.argv[2];
 for (const t of tweaks) {
