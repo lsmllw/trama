@@ -92,6 +92,8 @@ export class GameView {
   /** Unidade mostrada na janelinha de informações (null = escondida). */
   private tipUnit: string | null = null;
   private tipFromCard = false;
+  /** O cursor (hover) está sendo controlado pelas setas. */
+  private kbCursor = false;
 
 
   constructor(
@@ -135,6 +137,7 @@ export class GameView {
     });
     this.el.canvas.addEventListener('mousemove', (e) => {
       this.renderer.pointer(e.clientX, e.clientY);
+      this.kbCursor = false;
       const p = this.renderer.cellAt(e.clientX, e.clientY, this.s);
       if (!p || !this.hover || !same(p, this.hover)) {
         this.hover = p;
@@ -201,7 +204,57 @@ export class GameView {
     }
     this.selectedId = id;
     this.renderer.lockOn(id);
+    // O cursor do teclado começa na unidade.
+    this.hover = { x: u.x, y: u.y };
     this.afterChange();
+  }
+
+  /** Setas: move o cursor uma casa (→ +x, ← −x, ↓ +y, ↑ −y, que é como os eixos aparecem na tela). */
+  private moveCursor(dx: number, dy: number): void {
+    const s = this.s;
+    const a = s.activation;
+    const start = this.hover ?? (a ? getUnit(s, a.unitId) : s.bases[PLAYER]);
+    const x = Math.max(0, Math.min(s.width - 1, start.x + dx));
+    const y = Math.max(0, Math.min(s.height - 1, start.y + dy));
+    this.hover = { x, y };
+    this.kbCursor = true;
+    this.renderer.ensureVisible(x, y, s);
+    const u = unitAt(s, x, y);
+    if (u) {
+      const pt = this.renderer.clientPoint(x, y, s);
+      this.tipFromCard = false;
+      this.showTip(u.id, pt.x + 22, pt.y + 10);
+    } else {
+      this.hideTip();
+    }
+    this.refreshHighlights();
+  }
+
+  /** Espaço: confirma a casa do cursor, como um clique. Na própria unidade ativa, encerra a unidade. */
+  private confirmCursor(): void {
+    const s = this.s;
+    const a = s.activation;
+    const c = this.hover;
+    if (!c) {
+      if (a) this.endUnit();
+      return;
+    }
+    if (a && this.mode === 'normal') {
+      const u = getUnit(s, a.unitId);
+      if (u.x === c.x && u.y === c.y) {
+        this.endUnit();
+        return;
+      }
+    }
+    void this.onCellClick(c).then(() => {
+      // Depois de andar, o cursor acompanha a unidade.
+      const now = this.s.activation;
+      if (now) {
+        const u = getUnit(this.s, now.unitId);
+        if (this.kbCursor) this.hover = { x: u.x, y: u.y };
+        this.refreshHighlights();
+      }
+    });
   }
 
   /** Solta a câmera para voltar a seguir o mouse (X). */
@@ -567,8 +620,16 @@ export class GameView {
     if (this.busy) return;
     const k = e.key.toLowerCase();
     const dirs: Record<string, Dir> = { ArrowUp: 'N', ArrowDown: 'S', ArrowLeft: 'W', ArrowRight: 'E' };
-    if (e.key === ' ' || e.key === 'Enter' || k === 'z') {
-      // Z (ou Espaço/Enter) confirma: encerra a unidade.
+    const steps: Record<string, [number, number]> = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+    if (steps[e.key] && !e.shiftKey) {
+      e.preventDefault();
+      this.moveCursor(...steps[e.key]);
+    } else if (e.key === ' ') {
+      // Espaço confirma a casa do cursor.
+      e.preventDefault();
+      if (this.isPlayerTurn()) this.confirmCursor();
+    } else if (e.key === 'Enter' || k === 'z') {
+      // Z (ou Enter) confirma: encerra a unidade.
       e.preventDefault();
       this.endUnit();
     } else if (e.key === 'Escape' || k === 'x') {
@@ -580,7 +641,8 @@ export class GameView {
       if (u && u.alive) this.selectOwn(u.id);
     } else if (k === 'e' && this.isPlayerTurn()) {
       this.endPlayerPhase();
-    } else if (dirs[e.key] && this.s.activation && this.isPlayerTurn()) {
+    } else if (dirs[e.key] && e.shiftKey && this.s.activation && this.isPlayerTurn()) {
+      // Shift + setas: virar a unidade.
       e.preventDefault();
       rotate(this.s, dirs[e.key]);
       this.quiet();
@@ -626,6 +688,7 @@ export class GameView {
     const s = this.s;
     const hl = emptyHighlights();
     hl.hover = this.hover;
+    hl.kbCursor = this.kbCursor;
     hl.selectedId = this.selectedId;
     hl.activeId = s.activation?.unitId ?? null;
     if (s.activation && this.isPlayerTurn() && !this.busy) {
@@ -664,7 +727,7 @@ export class GameView {
       const a = s.activation;
       text = a.hasActed
         ? 'Ainda pode andar. Z confirma e encerra; X volta.'
-        : 'Mover (azul) e depois 1 ação: atacar (vermelho), curar (verde), coletar, item ou habilidade. Z confirma, X volta.';
+        : 'Mover (azul) e depois 1 ação: atacar (vermelho), curar (verde), coletar, item ou habilidade. Setas + Espaço escolhem a casa; Z encerra, X volta.';
     }
     if (this.hover) {
       const t = s.terrain[this.hover.y][this.hover.x];
@@ -884,7 +947,7 @@ export class GameView {
         { class: 'actions' },
         h('button', { class: 'primary', disabled: this.busy, onclick: () => this.endUnit() }, 'Confirmar e encerrar (Z)'),
       ),
-      h('div', { class: 'facing' }, 'Virar:', facing('N', '↑'), facing('W', '←'), facing('S', '↓'), facing('E', '→')),
+      h('div', { class: 'facing' }, 'Virar (Shift + setas):', facing('N', '↑'), facing('W', '←'), facing('S', '↓'), facing('E', '→')),
     );
   }
 
@@ -946,6 +1009,7 @@ function emptyHighlights(): Highlights {
     selectedId: null,
     activeId: null,
     hover: null,
+    kbCursor: false,
   };
 }
 
@@ -959,7 +1023,8 @@ function helpCard(): HTMLElement {
       {},
       h('li', {}, 'Cada time joga uma fase inteira: você move todas as suas unidades, depois a IA move as dela.'),
       h('li', {}, 'Cada unidade: mover e depois 1 ação (atacar, curar, coletar, usar item ou habilidade).'),
-      h('li', {}, 'Teclas 1–5 selecionam suas unidades. Z confirma, X volta. Selecionada, a câmera fica presa nela; X solta.'),
+      h('li', {}, 'Teclas 1–5 selecionam suas unidades. Setas movem o cursor pelas casas e Espaço confirma (andar, atacar, mirar). Shift + setas vira a unidade.'),
+      h('li', {}, 'Z confirma e encerra a unidade, X volta. Selecionada, a câmera fica presa nela; X solta.'),
       h('li', {}, 'Vence quem destruir a Base (QG) inimiga ou eliminar todas as unidades. Na rodada 20, decide por pontos.'),
       h('li', {}, 'Corpo a corpo abre o Confronto: 3 tempos. Leve tem 3 lances, Médio 2, Pesado 1 (mas bate mais forte).'),
       h('li', {}, 'O peso define os lances. Atacar pelo flanco dá 1 Leitura, pelas costas 2 (ver o lance do inimigo antes de escolher). Quem não agiu ganha Prontidão (!): +1 lance ao defender.'),

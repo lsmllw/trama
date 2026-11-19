@@ -41,19 +41,19 @@ npm run tune                   # compara variações de números (edite scripts/
 | Ação | Mouse | Teclado |
 | --- | --- | --- |
 | Selecionar unidade (a câmera centraliza e fica presa nela) | clique no tabuleiro ou no card da barra de baixo | 1 a 5 |
-| Confirmar (encerrar a unidade); a câmera fica parada onde estava | botão | Z (ou Espaço) |
+| Confirmar (encerrar a unidade); a câmera fica parada onde estava | botão | Z (ou Enter; Espaço com o cursor na própria unidade) |
 | Voltar (sair da mira, desfazer o movimento, desmarcar) e soltar a câmera | botão Desfazer | X (ou Esc) |
 | Ver informações da unidade | passar o mouse sobre ela ou sobre o card | — |
 | Zoom | roda do mouse | — |
 | Mover a câmera | sem unidade selecionada: com zoom, segue o cursor; sem zoom, o tabuleiro só se mexe de leve sobre o fundo | — |
 | Voltar à visão inteira | — | 0 ou Home |
-| Mover / atacar / curar | clique na casa azul / vermelha / verde | — |
+| Mover / atacar / curar | clique na casa azul / vermelha / verde | setas movem o cursor, Espaço confirma a casa |
 | Mirar morteiro ou granada | botão Mirar | M |
 | Habilidade | botão da habilidade | H |
 | Coletar / usar item | botões no painel | — |
 | Encerrar a fase | botão | E |
 | Correr (+2 casas, 2 ST) | botão | R |
-| Virar a unidade | setas no painel | ← ↑ → ↓ |
+| Virar a unidade | setas no painel | Shift + ← ↑ → ↓ |
 | Lances no Confronto | botões | 1 Golpe · 2 Guarda · 3 Finta · 4 Esperar · L Leitura · Z fecha |
 
 ## Estrutura

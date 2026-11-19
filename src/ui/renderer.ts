@@ -65,6 +65,8 @@ export interface Highlights {
   selectedId: string | null;
   activeId: string | null;
   hover: Pos | null;
+  /** O cursor está sendo movido pelo teclado (desenho mais forte). */
+  kbCursor: boolean;
 }
 
 interface FloatText {
@@ -220,7 +222,15 @@ export class Renderer {
     outline(h.abilityTargets, 'rgba(210, 165, 255, 0.95)');
     this.drawStrikes(s, now);
     this.drawMines(s, h);
-    if (h.hover) this.poly(this.quad(h.hover.x, h.hover.y, this.elev(s, h.hover.x, h.hover.y)), 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.75)', 1.5);
+    if (h.hover) {
+      const q = this.quad(h.hover.x, h.hover.y, this.elev(s, h.hover.x, h.hover.y));
+      if (h.kbCursor) {
+        const pulse = 0.55 + 0.35 * Math.sin(now / 160);
+        this.poly(q, `rgba(255, 210, 90, ${0.12 + 0.1 * pulse})`, `rgba(255, 210, 90, ${pulse + 0.1})`, 2.5);
+      } else {
+        this.poly(q, 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.75)', 1.5);
+      }
+    }
     this.drawLevelGlows(s, now);
 
     this.drawObjects(s, h, now);
@@ -277,6 +287,22 @@ export class Renderer {
     const W = this.canvas.width;
     const H = this.canvas.height;
     this.held = { tx: W / 2 - (W / 2 - this.cam.tx) * k, ty: H / 2 - (H / 2 - this.cam.ty) * k };
+  }
+
+  /** Se a casa estiver fora da tela (ou perto da borda), desloca a câmera para mostrá-la. */
+  ensureVisible(x: number, y: number, s: GameState, margin = 70): void {
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const base = this.held ?? { tx: this.cam.tx, ty: this.cam.ty };
+    const z = this.zTarget;
+    const w = this.P(x + 0.5, y + 0.5, this.elev(s, x, y));
+    const sx = w.x * z + base.tx;
+    const sy = w.y * z + base.ty;
+    const dx = sx < margin ? margin - sx : sx > W - margin ? W - margin - sx : 0;
+    const dy = sy < margin ? margin - sy : sy > H - margin ? H - margin - sy : 0;
+    if (!dx && !dy) return;
+    this.lockId = null;
+    this.held = { tx: base.tx + dx, ty: base.ty + dy };
   }
 
   get isHeld(): boolean {
