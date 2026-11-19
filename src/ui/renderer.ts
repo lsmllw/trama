@@ -108,8 +108,10 @@ export class Renderer {
   private pointerFrac: Pt | null = null;
   private follow: Pt = { x: 0.5, y: 0.5 };
   private lastNow = 0;
-  /** Unidade em que a câmera está presa (centralizada), ou null para seguir o mouse. */
+  /** Unidade em que a câmera está presa (centralizada), ou null. */
   private lockId: string | null = null;
+  /** Câmera parada onde está (depois de confirmar uma ação), até soltar com X. */
+  private held: { tx: number; ty: number } | null = null;
 
   constructor(
     readonly canvas: HTMLCanvasElement,
@@ -251,15 +253,41 @@ export class Renderer {
     this.pointerFrac = { x: Math.min(1, Math.max(0, fx)), y: Math.min(1, Math.max(0, fy)) };
   }
 
-  /** Zoom pela roda do mouse. Presa numa unidade, continua centralizada nela. */
+  /**
+   * Zoom pela roda do mouse. Presa numa unidade, continua centralizada nela; parada, o ponto sob
+   * o cursor fica fixo; solta, a câmera segue o cursor.
+   */
   zoomAt(clientX: number, clientY: number, factor: number): void {
-    if (!this.lockId) this.pointer(clientX, clientY);
+    const zOld = this.zTarget;
     this.zTarget = Math.min(MAX_ZOOM, Math.max(1, this.zTarget * factor));
+    if (this.held) {
+      const c = this.toCanvas(clientX, clientY);
+      const k = this.zTarget / zOld;
+      this.held = { tx: c.x - (c.x - this.held.tx) * k, ty: c.y - (c.y - this.held.ty) * k };
+    } else if (!this.lockId) {
+      this.pointer(clientX, clientY);
+    }
+  }
+
+  /** Para a câmera onde ela está agora (sem seguir unidade nem mouse). */
+  hold(): void {
+    this.lockId = null;
+    // Se ainda está chegando no zoom pedido, guarda a posição já no zoom final.
+    const k = this.zTarget / this.cam.z;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    this.held = { tx: W / 2 - (W / 2 - this.cam.tx) * k, ty: H / 2 - (H / 2 - this.cam.ty) * k };
+  }
+
+  get isHeld(): boolean {
+    return !!this.held;
   }
 
   /** Prende a câmera numa unidade (centraliza e acompanha), ou solta (null) para seguir o mouse. */
   lockOn(unitId: string | null): void {
-    if (this.lockId && !unitId) {
+    if (unitId) this.held = null;
+    if ((this.lockId || this.held) && !unitId) {
+      this.held = null;
       // Ao soltar, a câmera parte de onde está, sem pulo.
       const W = this.canvas.width;
       const H = this.canvas.height;
@@ -275,7 +303,10 @@ export class Renderer {
     return this.lockId;
   }
 
+  /** Visão inteira: sem zoom, solta e seguindo o mouse. */
   resetCamera(): void {
+    this.lockId = null;
+    this.held = null;
     this.zTarget = 1;
   }
 
@@ -287,7 +318,11 @@ export class Renderer {
     const zNext = this.cam.z + (this.zTarget - this.cam.z) * (1 - Math.exp(-dt / 90));
     const locked = this.lockId ? s.units.find((u) => u.id === this.lockId && u.alive) : undefined;
     let want: { tx: number; ty: number };
-    if (locked) {
+    if (this.held) {
+      // Parada: fica onde estava; durante um zoom, mantém o centro da tela no lugar.
+      const k = zNext / this.zTarget;
+      want = { tx: W / 2 - (W / 2 - this.held.tx) * k, ty: H / 2 - (H / 2 - this.held.ty) * k };
+    } else if (locked) {
       // Centraliza na unidade (mesmo na borda do mapa) e acompanha enquanto ela anda.
       const p = this.drawPos(locked, now);
       const w = this.P(p.x + 0.5, p.y + 0.5, this.elev(s, Math.round(p.x), Math.round(p.y)) + 14);

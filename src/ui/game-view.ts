@@ -204,9 +204,14 @@ export class GameView {
     this.afterChange();
   }
 
-  /** Solta a câmera para voltar a seguir o mouse. */
+  /** Solta a câmera para voltar a seguir o mouse (X). */
   private releaseCamera(): void {
     this.renderer.lockOn(null);
+  }
+
+  /** Depois de confirmar, a câmera fica parada onde estava (até X ou nova seleção). */
+  private holdCamera(): void {
+    if (this.renderer.lockedOn) this.renderer.hold();
   }
 
   // ---------- Janela de informações ----------
@@ -368,7 +373,7 @@ export class GameView {
   private async runAiPhase(): Promise<void> {
     this.busy = true;
     this.mode = 'normal';
-    this.releaseCamera();
+    this.holdCamera();
     this.quiet();
     const s = this.s;
     const team = s.activeTeam;
@@ -526,7 +531,7 @@ export class GameView {
     this.mode = 'normal';
     endActivation(s);
     this.selectedId = null;
-    this.releaseCamera();
+    this.holdCamera();
     this.afterChange();
   }
 
@@ -535,7 +540,7 @@ export class GameView {
     this.mode = 'normal';
     endPhase(this.s);
     this.selectedId = null;
-    this.releaseCamera();
+    this.holdCamera();
     this.afterChange();
   }
 
@@ -665,7 +670,7 @@ export class GameView {
       const t = s.terrain[this.hover.y][this.hover.x];
       text += `   [${this.hover.x + 1},${this.hover.y + 1}] ${TERRAIN[t].label}`;
     }
-    text += this.renderer?.lockedOn ? '   · Câmera presa (X solta)' : '   · Roda: zoom · 0: visão inteira';
+    text += this.renderer?.lockedOn ? '   · Câmera presa (X solta)' : this.renderer?.isHeld ? '   · Câmera parada (X solta)' : '   · Roda: zoom · 0: visão inteira';
     this.el.hint.textContent = text;
   }
 

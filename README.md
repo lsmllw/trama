@@ -41,7 +41,7 @@ npm run tune                   # compara variações de números (edite scripts/
 | Ação | Mouse | Teclado |
 | --- | --- | --- |
 | Selecionar unidade (a câmera centraliza e fica presa nela) | clique no tabuleiro ou no card da barra de baixo | 1 a 5 |
-| Confirmar (encerrar a unidade) | botão | Z (ou Espaço) |
+| Confirmar (encerrar a unidade); a câmera fica parada onde estava | botão | Z (ou Espaço) |
 | Voltar (sair da mira, desfazer o movimento, desmarcar) e soltar a câmera | botão Desfazer | X (ou Esc) |
 | Ver informações da unidade | passar o mouse sobre ela ou sobre o card | — |
 | Zoom | roda do mouse | — |
