@@ -2,7 +2,7 @@
 // Velocidade de reação = número de lances (Leve 3, Médio 2, Pesado 1).
 // Quem não joga lance num tempo fica em Recuperação ("esperar").
 
-import { BASE_LANCES, CLASSES, FORCA, LANCE_COST, MAX_LANCES, TEMPOS, WEIGHT_RANK, XP_HIT } from './data';
+import { BASE_LANCES, CLASH_TIE, CLASSES, FORCA, LANCE_COST, MAX_LANCES, SIDE_BONUS, TEMPOS, WEIGHT_RANK, XP_HIT } from './data';
 import { consumeOil, effectiveArmor, grantXp, hitUnit, log, rawDamage, unitAtq, unitName } from './combat';
 import { attackSide, dirFromTo, getUnit, terrainAt } from './grid';
 import type { Side } from './grid';
@@ -91,12 +91,14 @@ export function countLances(
     a += bonusLances;
     atkNotes.push(`Habilidade +${bonusLances}`);
   }
-  if (side === 'flanco') {
-    a += 1;
-    atkNotes.push('Flanco +1');
-  } else if (side === 'costas') {
-    a += 2;
-    atkNotes.push('Costas +2');
+  let sideReads = 0;
+  const sideBonus = side === 'flanco' ? SIDE_BONUS.flanco : side === 'costas' ? SIDE_BONUS.costas : 0;
+  if (sideBonus && SIDE_BONUS.mode === 'lances') {
+    a += sideBonus;
+    atkNotes.push(`${side === 'flanco' ? 'Flanco' : 'Costas'} +${sideBonus}`);
+  } else if (sideBonus) {
+    sideReads = sideBonus;
+    atkNotes.push(`${side === 'flanco' ? 'Flanco' : 'Costas'}: ${sideBonus} Leitura${sideBonus > 1 ? 's' : ''}`);
   }
   a += mudPenalty(s, attacker, atkNotes);
   if (attacker.focus) {
@@ -120,7 +122,9 @@ export function countLances(
     defNotes.push('Foco +1');
   }
 
-  return { atk: cap(a, atkNotes), def: cap(d, defNotes), side };
+  const atk = cap(a, atkNotes);
+  atk.reads += sideReads;
+  return { atk, def: cap(d, defNotes), side };
 }
 
 export interface ConfrontoBonus {
@@ -185,10 +189,10 @@ function ordered(a: Lance, b: Lance, wa: Weight, wb: Weight): Clash | null {
   if (a === 'golpe' && b === 'golpe') {
     const ra = WEIGHT_RANK[wa];
     const rb = WEIGHT_RANK[wb];
-    if (ra === rb) return { aHit: 1.0, bHit: 1.0, exposeA: false, exposeB: false, why: 'Golpe contra Golpe: os dois acertam.' };
+    if (ra === rb) return { aHit: CLASH_TIE.even, bHit: CLASH_TIE.even, exposeA: false, exposeB: false, why: 'Golpe contra Golpe: os dois acertam.' };
     return {
-      aHit: ra > rb ? 2.0 : 1.0,
-      bHit: rb > ra ? 2.0 : 1.0,
+      aHit: ra > rb ? CLASH_TIE.heavier : CLASH_TIE.lighter,
+      bHit: rb > ra ? CLASH_TIE.heavier : CLASH_TIE.lighter,
       exposeA: false,
       exposeB: false,
       why: 'Golpe contra Golpe: os dois acertam, o mais pesado com mais força.',

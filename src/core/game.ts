@@ -21,6 +21,7 @@ import {
   unitName,
 } from './combat';
 import {
+  ANTITANK,
   BASE_ARMOR,
   BASE_HP,
   BASE_MELEE_MULT,
@@ -31,6 +32,7 @@ import {
   MAX_ITEMS,
   MAX_ROUNDS,
   MINE_DAMAGE,
+  MINE_VEHICLE_MULT,
   NODE_CHARGES,
   RUN_BONUS,
   RUN_COST,
@@ -125,6 +127,9 @@ export function createGame(opts: NewGameOptions): GameState {
         tempAtq: 0,
         tauntBy: null,
         tauntUntil: 0,
+        stuckUntil: 0,
+        dealt: 0,
+        taken: 0,
       });
     });
   }
@@ -144,8 +149,9 @@ export function currentUnit(s: GameState): Unit | null {
   return s.activation ? getUnit(s, s.activation.unitId) : null;
 }
 
-/** Movimento da unidade no início da ativação (Exausta: −1). */
-export function baseMovement(u: Unit): number {
+/** Movimento da unidade no início da ativação (Exausta: −1; imobilizada por mina: 0). */
+export function baseMovement(s: GameState, u: Unit): number {
+  if (s.phase <= u.stuckUntil) return 0;
   return Math.max(0, CLASSES[u.cls].mov - (u.stamina <= 0 ? 1 : 0));
 }
 
@@ -271,7 +277,7 @@ export function beginActivation(s: GameState, unitId: string): void {
     startX: u.x,
     startY: u.y,
     startFacing: u.facing,
-    mpLeft: baseMovement(u),
+    mpLeft: baseMovement(s, u),
     hasMoved: false,
     hasActed: false,
     ran: false,
@@ -314,9 +320,14 @@ export function moveTo(s: GameState, x: number, y: number): Pos[] {
     s.mines = s.mines.filter((m) => m !== mine);
     a.mpLeft = 0;
     a.noUndo = true;
-    log(s, `${unitName(u)} pisou numa mina! ${MINE_DAMAGE} de dano.`);
+    const vehicle = !!CLASSES[u.cls].vehicle;
+    const dmg = MINE_DAMAGE * (vehicle ? MINE_VEHICLE_MULT : 1);
+    const owner = s.units.find((v) => v.id === mine.ownerId && v.alive) ?? null;
+    log(s, `${unitName(u)} pisou numa mina! ${dmg} de dano${vehicle ? ' e fica imobilizado na próxima fase' : ''}.`);
     s.events.push({ kind: 'impacto', cells: [{ x: end.x, y: end.y }] });
-    hitUnit(s, u, MINE_DAMAGE);
+    if (vehicle) u.stuckUntil = s.phase + 2;
+    hitUnit(s, u, dmg, owner);
+    if (owner) grantXp(s, owner, XP_HIT);
     checkVictory(s);
   }
   return path;
@@ -334,7 +345,7 @@ export function undoMove(s: GameState): void {
   u.x = a.startX;
   u.y = a.startY;
   u.facing = a.startFacing;
-  a.mpLeft = baseMovement(u);
+  a.mpLeft = baseMovement(s, u);
   a.hasMoved = false;
 }
 
@@ -459,7 +470,7 @@ export function attackArea(s: GameState, x: number, y: number): void {
     log(s, `${unitName(u)} marca disparo de morteiro em (${x + 1},${y + 1}). Cai no começo da próxima fase ${teamName(u.team)}.`);
   } else {
     log(s, `${unitName(u)} arremessa granada em (${x + 1},${y + 1}).`);
-    if (areaDamage(s, cells, atq, r.mult, u) > 0) grantXp(s, u, XP_HIT);
+    if (areaDamage(s, cells, atq, r.mult, u, ANTITANK.granadaArmorIgnore) > 0) grantXp(s, u, XP_HIT);
     checkVictory(s);
   }
 }

@@ -57,6 +57,9 @@ export function grantXp(s: GameState, u: Unit, amount: number): void {
 /** Aplica dano. `by` recebe XP de abate se for inimigo. Devolve true se matou. */
 export function hitUnit(s: GameState, u: Unit, amount: number, by: Unit | null = null): boolean {
   if (!u.alive || amount <= 0) return false;
+  const real = Math.min(u.hp, amount);
+  u.taken += real;
+  if (by && by.team !== u.team) by.dealt += real;
   u.hp = Math.max(0, u.hp - amount);
   s.events.push({ kind: 'dano', x: u.x, y: u.y, amount });
   if (u.hp === 0) {
@@ -98,13 +101,14 @@ export function healUnit(s: GameState, u: Unit, amount: number): number {
 }
 
 /** Dano em área (morteiro, granada). Atinge aliados, inimigos, Bases e barricadas. Devolve inimigos atingidos. */
-export function areaDamage(s: GameState, cells: Pos[], atq: number, mult: number, by: Unit | null): number {
+export function areaDamage(s: GameState, cells: Pos[], atq: number, mult: number, by: Unit | null, antitank = 0): number {
   s.events.push({ kind: 'impacto', cells });
   let enemiesHit = 0;
   for (const c of cells) {
     const u = s.units.find((v) => v.alive && v.x === c.x && v.y === c.y);
     if (u) {
-      const dmg = rawDamage(atq, mult, effectiveArmor(s, u));
+      const armor = effectiveArmor(s, u) * (CLASSES[u.cls].vehicle ? 1 - antitank : 1);
+      const dmg = rawDamage(atq, mult, armor);
       log(s, `  ${unitName(u)} leva ${dmg} de dano.`);
       if (by && u.team !== by.team) enemiesHit++;
       hitUnit(s, u, dmg, by && by.alive ? by : null);

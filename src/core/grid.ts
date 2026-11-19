@@ -61,7 +61,9 @@ export function neighbors(s: GameState, p: Pos): Pos[] {
 /** Custo para a unidade entrar na casa (Infinity = intransitável). */
 export function moveCost(s: GameState, unit: Unit, x: number, y: number): number {
   if (barricadeAt(s, x, y)) return Infinity;
-  const def = TERRAIN[terrainAt(s, x, y)];
+  const t = terrainAt(s, x, y);
+  if (CLASSES[unit.cls].forbidden?.includes(t)) return Infinity;
+  const def = TERRAIN[t];
   if (CLASSES[unit.cls].arm === 'cavalaria' && def.cavalryCost !== undefined) return def.cavalryCost;
   return def.cost;
 }

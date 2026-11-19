@@ -4,6 +4,7 @@
 
 import { aliveUnits, effectiveArmor, rawDamage, rangedDamage, unitAtq } from './combat';
 import {
+  ANTITANK,
   AREA_HEAL,
   BASE_MELEE_MULT,
   CLASSES,
@@ -91,17 +92,58 @@ export interface Plan {
 
 // ---------- Avaliação ----------
 
+/** Pesos da avaliação de posição (ajustáveis em scripts/tune.ts). */
+export const AI_WEIGHTS = {
+  /** Quanto pesa o dano que a casa pode receber na próxima fase inimiga. */
+  threat: 0.25,
+  /** Penalidade por casa de distância do aliado mais próximo acima de 2 (andar em grupo). */
+  cohesion: 0,
+  /** Quanto pesa se aproximar do objetivo. */
+  advance: 0.8,
+  /** Penalidade por terminar numa casa onde pode morrer. */
+  deathRisk: 8,
+};
+
 const unitValue = (u: Unit) => CLASSES[u.cls].atq + u.maxHp / 4;
 
-/** Dano que os inimigos de `team` poderiam causar a quem ficar em `cell` na próxima fase. */
-function threatAt(s: GameState, team: Team, cell: Pos, armor: number): number {
-  let threat = 0;
+/**
+ * Mapa de perigo: para cada casa, quanto ATQ inimigo consegue chegar nela na próxima fase
+ * (movimento real pelo terreno + alcance de ataque). Calculado uma vez por decisão.
+ */
+export type ThreatMap = Float32Array;
+
+export function buildThreatMap(s: GameState, team: Team): ThreatMap {
+  const map = new Float32Array(s.width * s.height);
   for (const e of aliveUnits(s, otherTeam(team))) {
     const d = CLASSES[e.cls];
-    const reach = d.ranged ? d.ranged.max : 1;
-    if (manhattan(e, cell) <= d.mov + reach) threat += Math.max(1, unitAtq(e) * 1.6 - armor);
+    const mp = baseMovement(s, e) + (e.stamina >= RUN_COST ? RUN_BONUS : 0);
+    const reach = reachable(s, e, mp);
+    const minR = d.melee ? 1 : d.ranged ? d.ranged.min : 1;
+    const maxR = d.ranged ? d.ranged.max : 1;
+    const power = unitAtq(e) * (d.melee ? 1.6 : d.ranged ? d.ranged.mult : 1);
+    const marked = new Uint8Array(s.width * s.height);
+    for (const k of reach.keys()) {
+      const p = fromKey(s, k);
+      if (!canStop(s, e, p.x, p.y)) continue;
+      for (let dy = -maxR; dy <= maxR; dy++)
+        for (let dx = -maxR; dx <= maxR; dx++) {
+          const dist = Math.abs(dx) + Math.abs(dy);
+          if (dist < minR || dist > maxR) continue;
+          const x = p.x + dx;
+          const y = p.y + dy;
+          if (x < 0 || y < 0 || x >= s.width || y >= s.height) continue;
+          marked[y * s.width + x] = 1;
+        }
+    }
+    for (let i = 0; i < marked.length; i++) if (marked[i]) map[i] += power;
   }
-  return threat;
+  return map;
+}
+
+/** Dano estimado que quem ficar em `cell` pode levar na próxima fase inimiga. */
+function threatAt(s: GameState, threat: ThreatMap, cell: Pos, armor: number): number {
+  const raw = threat[cell.y * s.width + cell.x];
+  return raw > 0 ? Math.max(1, raw - armor * 1.5) : 0;
 }
 
 function strikeDanger(s: GameState, cell: Pos, armor: number): number {
@@ -148,7 +190,8 @@ function areaScore(s: GameState, u: Unit, from: Pos, x: number, y: number): numb
     const isSelf = c.x === from.x && c.y === from.y;
     const occ = isSelf ? u : s.units.find((v) => v.alive && v.id !== u.id && v.x === c.x && v.y === c.y);
     if (occ) {
-      const dmg = rawDamage(atq, r.mult, effectiveArmor(s, occ));
+      const ignore = !delayed && CLASSES[occ.cls].vehicle ? ANTITANK.granadaArmorIgnore : 0;
+      const dmg = rawDamage(atq, r.mult, effectiveArmor(s, occ) * (1 - ignore));
       if (occ.team === u.team) score -= dmg * (delayed ? 0.8 : 1.5);
       else score += (dmg + (dmg >= occ.hp ? 10 : 0)) * (delayed ? 0.55 : 1);
     }
@@ -237,8 +280,22 @@ function abilityScore(s: GameState, u: Unit, from: Pos, t: AbilityTarget): numbe
       const dmg = rawDamage(atq, 1.5, effectiveArmor(s, target!));
       return dmg * 1.4;
     }
-    case 'mina':
-      return aliveUnits(s, otherTeam(u.team)).some((e) => manhattan(e, t) <= 4) ? 1.5 : 0;
+    case 'mina': {
+      // Minas valem onde o inimigo vai passar; contra Blindado, muito mais.
+      let sc = 0;
+      for (const e of aliveUnits(s, otherTeam(u.team))) {
+        const d = manhattan(e, t);
+        const reach = CLASSES[e.cls].mov + 2;
+        if (d > reach || d === 0) continue;
+        const w = CLASSES[e.cls].vehicle ? 7 : 1.2;
+        sc += w * (1 - d / (reach + 1));
+      }
+      const ownBase = s.bases[u.team];
+      if (manhattan(t, ownBase) <= 4) sc += 1;
+      if (terrainAt(s, t.x, t.y) === 'ponte') sc += 1.5;
+      if (s.mines.some((m) => m.team === u.team && manhattan(m, t) <= 1)) sc -= 2;
+      return sc;
+    }
     case 'reparo': {
       const base = s.bases[u.team];
       if (base.x === t.x && base.y === t.y) return Math.min(REPAIR_AMOUNT, base.maxHp - base.hp) * 1.5;
@@ -258,7 +315,7 @@ function abilityScore(s: GameState, u: Unit, from: Pos, t: AbilityTarget): numbe
   }
 }
 
-function positionScore(s: GameState, u: Unit, c: Pos): number {
+function positionScore(s: GameState, u: Unit, c: Pos, threat: ThreatMap): number {
   const def = CLASSES[u.cls];
   const enemies = aliveUnits(s, otherTeam(u.team));
   const enemyBase = s.bases[otherTeam(u.team)];
@@ -275,7 +332,14 @@ function positionScore(s: GameState, u: Unit, c: Pos): number {
     const ideal = def.ranged.kind === 'morteiro' ? 5 : def.ranged.kind === 'canhao' ? 6 : def.ranged.max - 1;
     score -= Math.abs(Math.min(dEnemy, dBase) - ideal) * 0.6;
   } else {
-    score -= Math.min(dEnemy, dBase * 0.85) * 0.8;
+    score -= Math.min(dEnemy, dBase * 0.85) * AI_WEIGHTS.advance;
+  }
+  if (AI_WEIGHTS.cohesion) {
+    const allies = aliveUnits(s, u.team).filter((a) => a.id !== u.id);
+    if (allies.length) {
+      const dAlly = Math.min(...allies.map((a) => manhattan(c, a)));
+      score -= Math.max(0, dAlly - 2) * AI_WEIGHTS.cohesion;
+    }
   }
 
   // Defender a própria Base se houver inimigo perto dela.
@@ -284,7 +348,10 @@ function positionScore(s: GameState, u: Unit, c: Pos): number {
 
   const armor = CLASSES[u.cls].armadura + TERRAIN[terrainAt(s, c.x, c.y)].armorBonus;
   const fragility = 1 + (1 - u.hp / u.maxHp);
-  score -= threatAt(s, u.team, c, armor) * 0.12 * fragility;
+  const danger = threatAt(s, threat, c, armor);
+  score -= danger * AI_WEIGHTS.threat * fragility;
+  // Risco de morrer na próxima fase pesa muito mais.
+  if (danger >= u.hp) score -= AI_WEIGHTS.deathRisk;
   score -= strikeDanger(s, c, armor) * 1.2;
   if (TERRAIN[terrainAt(s, c.x, c.y)].cover) score += 0.8;
   if (terrainAt(s, c.x, c.y) === 'colina' && def.ranged) score += 0.6;
@@ -300,13 +367,14 @@ function pickColor(u: Unit): Exclude<NodeColor, 'prisma'> {
 
 export function planActivation(s: GameState, team: Team, difficulty: Difficulty): Plan | null {
   const prof = PROFILES[difficulty];
+  const threat = buildThreatMap(s, team);
   let best: Plan | null = null;
   const consider = (plan: Omit<Plan, 'score'>, score: number) => {
     const total = score + (nextRandom(s) - 0.5) * prof.noise;
     if (!best || total > best.score) best = { ...plan, score: total };
   };
   for (const u of aliveUnits(s, team).filter((v) => !v.activated)) {
-    const mp = baseMovement(u);
+    const mp = baseMovement(s, u);
     const canRunNow = u.stamina >= RUN_COST + 2;
     const reach = reachable(s, u, mp + (canRunNow ? RUN_BONUS : 0));
     const abilityReady = !abilityBlock(s, u) && abilityOf(u).id !== 'fumaca' && abilityOf(u).id !== 'barricada';
@@ -316,7 +384,7 @@ export function planActivation(s: GameState, team: Team, difficulty: Difficulty)
       const needsRun = node.cost > mp;
       const moved = c.x !== u.x || c.y !== u.y;
       const base = { unitId: u.id, run: needsRun, moveTo: moved ? c : null };
-      const pos = positionScore(s, u, c) - (needsRun ? 1.5 : 0);
+      const pos = positionScore(s, u, c, threat) - (needsRun ? 1.5 : 0);
       consider({ ...base, action: null }, pos);
 
       for (const t of targetsFrom(s, u, c, { moved })) {

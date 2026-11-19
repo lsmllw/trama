@@ -54,6 +54,10 @@ export interface ClassDef {
   heal?: HealProfile;
   /** Pode usar o movimento que sobrou depois de agir (Cavaleiro, Espião). */
   moveAfterAction: boolean;
+  /** Terrenos onde não pode entrar (o Blindado só anda em terreno liso). */
+  forbidden?: Terrain[];
+  /** Veículo: mina causa dano dobrado e imobiliza. */
+  vehicle?: boolean;
   role: string;
 }
 
@@ -122,6 +126,11 @@ export interface Unit {
   /** Provocada por este Tank até o fim da fase `tauntUntil`. */
   tauntBy: string | null;
   tauntUntil: number;
+  /** Imobilizado (mina): movimento 0 até o fim da fase `stuckUntil`. */
+  stuckUntil: number;
+  /** Estatísticas da partida: dano causado e recebido. */
+  dealt: number;
+  taken: number;
 }
 
 export interface Barricade {
@@ -141,6 +150,7 @@ export interface Smoke {
 export interface Mine {
   id: number;
   team: Team;
+  ownerId: string;
   x: number;
   y: number;
 }

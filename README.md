@@ -12,6 +12,8 @@ npm run dev        # abre em http://localhost:5173
 npm run build      # gera dist/index.html, um arquivo só que abre direto no navegador
 npm test           # testes das regras
 npm run sim -- 1000 veterano   # 1000 partidas IA × IA, com estatísticas
+npm run balance                # relatório de balanceamento: classes e arquétipos
+npm run tune                   # compara variações de números (edite scripts/tune.ts)
 ```
 
 ## Como jogar
@@ -22,7 +24,7 @@ npm run sim -- 1000 veterano   # 1000 partidas IA × IA, com estatísticas
 - **Confronto (corpo a corpo):** 3 tempos. Leve tem 3 lances, Médio 2, Pesado 1, mas o lance do pesado bate mais forte (×1,6).
   - Golpe vence Finta · Guarda vence Golpe · Finta vence Guarda e quem espera.
   - Esperar não gasta lance; bloqueia Golpe e perde para Finta.
-  - Atacar pelo flanco dá +1 lance, pelas costas +2. Lance acima de 3 vira **Leitura** (ver o lance do inimigo antes de escolher).
+  - **O peso define os lances; a posição define a informação.** Atacar pelo flanco dá 1 **Leitura**, pelas costas 2 (ver o lance do inimigo antes de escolher). Lance acima de 3 também vira Leitura.
   - Quem perde para uma Finta fica **Exposto**: no tempo seguinte, escolhe primeiro e o outro vê.
 - **Prontidão (!):** quem não agiu na ativação ganha +1 lance ao defender.
 - **Stamina** (barra amarela): lances, Correr e Cura gastam; volta 3 por rodada. Com 0, a unidade fica Exausta.
@@ -31,6 +33,8 @@ npm run sim -- 1000 veterano   # 1000 partidas IA × IA, com estatísticas
 - **Habilidades:** uma por classe, liberada no level 2, paga com Stamina. Avanço, Tiro certeiro, Provocar, Investida, Atropelar, Fumaça, Perfurante, Mina, Reparo, Barricada, Cura em área e Furtar.
 - **Itens:** coletados nos nós de cor (cada nó tem 3 cargas e recupera 1 por rodada). Verde dá Tônico (+12 HP), laranja dá Óleo de combate (+3 ATQ no próximo ataque), roxo dá Elixir de foco (+1 lance no próximo Confronto e +4 Stamina). A Fonte Prismática no centro dá qualquer um. Cada unidade carrega até 2.
 - **Base:** 60 HP; no fim de cada rodada acerta 5 em cada inimigo encostado nela.
+- **Blindado:** anda só 3 casas e só em terreno liso (não entra em floresta, colina, ruína, lama nem barricada).
+- **Bombardeiro, o contra do Blindado:** planta minas desde o level 1 (até 3 ativas). Mina causa 8; num Blindado, 16 e ele fica imobilizado na fase seguinte. A granada dele ignora a armadura do Blindado.
 
 ### Controles
 
@@ -67,13 +71,31 @@ scripts/       simulação IA × IA
 
 O núcleo não conhece a tela: a mesma lógica roda no navegador, nos testes e na simulação.
 
-## Números da simulação (600 partidas IA × IA, Veterano)
+## Balanceamento (`npm run balance`, IA Veterano × Veterano)
 
-- Lado não decide: Azul 51,5% × Vermelho 48,2%.
-- 7,2 rodadas em média; 69% terminam por eliminação, 29% pela Base.
-- A IA coleta cerca de 13 itens por partida e 63% das unidades chegam ao level 2.
-- O Blindado continua forte demais (times com ele vencem cerca de 66%).
+Taxa de vitória dos times que tinham cada classe (1500 partidas com times sorteados). A faixa saudável é 45% a 55%.
+
+| Classe | Antes | Agora |
+| --- | --- | --- |
+| Blindado | 66,8% | 49,5% |
+| Cavaleiro | 60,0% | 57,7% |
+| Atirador | 55,4% | 59,1% |
+| Canhão | 48,2% | 58,7% |
+| Bombardeiro | 46,9% | 52,4% |
+| Morteiro | 39,8% | 52,2% |
+| Espião | 41,9% | 48,1% |
+| Tank | 56,5% | 44,5% |
+| Construtor | 49,3% | 43,1% |
+
+Arquétipos (8 times fixos se enfrentando, 30 partidas por par): o time com dois Blindados caiu de **91% para 47%** de vitórias, e o Antiblindado (dois Bombardeiros) vence os Blindados em 55% dos confrontos diretos. Ainda fora da faixa: Artilharia (76%), Infiltração (33%) e Engenharia (28%).
+
+O que mudou para chegar aqui:
+
+- **Flanco e costas dão Leitura em vez de lances.** Era a causa principal: o Blindado atacava pelo flanco ou pelas costas em 98% dos Confrontos e ganhava até 3 lances com força ×1,6.
+- **IA com mapa de perigo:** ela sabe quais casas o inimigo alcança na fase seguinte e evita terminar onde pode morrer. Antes, as unidades rápidas chegavam uma a uma e eram destruídas, o que favorecia times lentos.
+- Blindado com MOV 3 e só terreno liso; minas e granada antitanque do Bombardeiro.
+- Números: Atirador ATQ 5, Cavaleiro ATQ 7, Canhão ATQ 9, Mecânico ATQ 6, Construtor ATQ 7, Espião ATQ 8 e HP 20; Reparo do Mecânico vale para qualquer aliado.
 
 ## O que ainda falta
 
-Técnicas de Confronto por classe, construções (Fortaleza, Acampamento, Igreja…), o triângulo de cores verde > roxo > laranja, arte e som.
+Técnicas de Confronto por classe, Camuflagem do Espião, IA usando barricadas (deve ajudar a Engenharia), construções (Fortaleza, Acampamento, Igreja…), o triângulo de cores verde > roxo > laranja, arte e som.

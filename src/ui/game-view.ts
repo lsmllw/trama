@@ -3,7 +3,6 @@
 
 import {
   ABILITIES,
-  ABILITY_LEVEL,
   abilityBlock,
   abilityTargets,
   activatable,
@@ -52,6 +51,7 @@ import {
   undoMove,
   unitAt,
   unitAtq,
+  unlockLevel,
   useAbility,
   useItem,
   WEIGHT_LABEL,
@@ -546,6 +546,8 @@ export class GameView {
     if (u.oil) status.push('Óleo ativo (+3 ATQ)');
     if (u.focus) status.push('Foco ativo (+1 lance)');
     if (tauntOf(s, u)) status.push('Provocada pelo Tank');
+    if (s.phase <= u.stuckUntil) status.push('Imobilizada por mina');
+    if (d.forbidden) status.push('Só anda em terreno liso');
     const range = d.ranged ? `${d.ranged.min}–${d.ranged.max}` : '1';
     const next = u.level < MAX_LEVEL ? `${u.xp}/${LEVEL_XP[u.level]} XP` : 'nível máximo';
     return h(
@@ -567,7 +569,7 @@ export class GameView {
         'div',
         { class: 'ability-line' },
         h('b', {}, `${ab.name} (${ab.cost} ST)`),
-        u.level < ABILITY_LEVEL ? h('span', { class: 'locked' }, ` · bloqueada até o level ${ABILITY_LEVEL}`) : null,
+        u.level < unlockLevel(u) ? h('span', { class: 'locked' }, ` · bloqueada até o level ${unlockLevel(u)}`) : null,
         h('div', {}, ab.desc),
       ),
       h('div', { class: 'ability-line' }, 'Itens: ', u.items.length ? u.items.map((i) => ITEMS[i].name).join(', ') : 'nenhum'),
@@ -756,7 +758,9 @@ function helpCard(): HTMLElement {
       h('li', {}, 'Cada unidade: mover e depois 1 ação (atacar, curar, coletar, usar item ou habilidade).'),
       h('li', {}, 'Vence quem destruir a Base (QG) inimiga ou eliminar todas as unidades. Na rodada 20, decide por pontos.'),
       h('li', {}, 'Corpo a corpo abre o Confronto: 3 tempos. Leve tem 3 lances, Médio 2, Pesado 1 (mas bate mais forte).'),
-      h('li', {}, 'Flanco +1 lance, costas +2. Quem não agiu ganha Prontidão (!): +1 lance ao defender.'),
+      h('li', {}, 'O peso define os lances. Atacar pelo flanco dá 1 Leitura, pelas costas 2 (ver o lance do inimigo antes de escolher). Quem não agiu ganha Prontidão (!): +1 lance ao defender.'),
+      h('li', {}, 'O Blindado anda 3 e só em terreno liso (nada de floresta, colina, ruína, lama ou barricada).'),
+      h('li', {}, 'O Bombardeiro planta minas desde o level 1 (até 3). Mina causa 8; num Blindado, 16 e ele fica imobilizado. A granada dele ignora a armadura do Blindado.'),
       h('li', {}, 'XP: acertar ou vencer Confronto +1, abater +2, coletar ou curar +1. No level 2 a habilidade da classe é liberada.'),
       h('li', {}, 'Nós de cor (quadradinhos = cargas): verde dá Tônico, laranja Óleo de combate, roxo Elixir de foco. A Fonte central dá qualquer um.'),
       h('li', {}, 'Morteiro cai no começo da próxima fase de quem atirou. Granada explode na hora. A Base acerta 5 em quem encosta nela.'),

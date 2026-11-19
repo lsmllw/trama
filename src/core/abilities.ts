@@ -14,7 +14,7 @@ import {
   unitAtq,
   unitName,
 } from './combat';
-import { ABILITIES, ABILITY_LEVEL, AREA_HEAL, BARRICADE_HP, MAX_ITEMS, RAM_BONUS, REPAIR_AMOUNT, XP_HIT, XP_SUPPORT } from './data';
+import { ABILITIES, ABILITY_LEVEL, AREA_HEAL, BARRICADE_HP, MAX_ITEMS, MAX_MINES_PER_OWNER, REPAIR_ANY, RAM_BONUS, REPAIR_AMOUNT, XP_HIT, XP_SUPPORT } from './data';
 import { startConfronto } from './confronto';
 import type { ConfrontoState } from './confronto';
 import {
@@ -49,11 +49,13 @@ export interface AbilityTarget {
 }
 
 export const abilityOf = (u: Unit) => ABILITIES[u.cls];
-export const abilityUnlocked = (u: Unit): boolean => u.level >= ABILITY_LEVEL;
+/** Level em que a habilidade da classe é liberada. */
+export const unlockLevel = (u: Unit): number => ABILITIES[u.cls].unlock ?? ABILITY_LEVEL;
+export const abilityUnlocked = (u: Unit): boolean => u.level >= unlockLevel(u);
 
 /** Por que a habilidade não pode ser usada agora (null = pode). */
 export function abilityBlock(s: GameState, u: Unit): string | null {
-  if (!abilityUnlocked(u)) return `Liberada no level ${ABILITY_LEVEL}`;
+  if (!abilityUnlocked(u)) return `Liberada no level ${unlockLevel(u)}`;
   if (u.stamina < abilityOf(u).cost) return `Precisa de ${abilityOf(u).cost} de Stamina`;
   const a = s.activation;
   if (a && a.unitId === u.id && a.hasActed) return 'A unidade já agiu';
@@ -123,6 +125,7 @@ export function abilityTargets(s: GameState, u: Unit, from: Pos = u, moved = s.a
       }
       break;
     case 'mina':
+      if (s.mines.filter((m) => m.ownerId === u.id).length >= MAX_MINES_PER_OWNER) break;
       for (let y = from.y - 2; y <= from.y + 2; y++)
         for (let x = from.x - 2; x <= from.x + 2; x++) {
           const d = manhattan(from, { x, y });
@@ -134,7 +137,8 @@ export function abilityTargets(s: GameState, u: Unit, from: Pos = u, moved = s.a
       if (manhattan(from, base) === 1 && base.hp < base.maxHp) out.push({ ability: ab, x: base.x, y: base.y });
       for (const b of s.barricades) if (b.team === u.team && manhattan(from, b) === 1 && b.hp < BARRICADE_HP) out.push({ ability: ab, x: b.x, y: b.y });
       for (const ally of aliveUnits(s, u.team)) {
-        if ((ally.cls === 'blindado' || ally.cls === 'canhao') && manhattan(from, ally) === 1 && ally.hp < ally.maxHp) {
+        const fits = REPAIR_ANY.value || ally.cls === 'blindado' || ally.cls === 'canhao';
+        if (fits && ally.id !== u.id && manhattan(from, ally) === 1 && ally.hp < ally.maxHp) {
           out.push({ ability: ab, x: ally.x, y: ally.y, unitId: ally.id });
         }
       }
@@ -267,7 +271,7 @@ export function useAbility(s: GameState, x: number, y: number): ConfrontoState |
       break;
     }
     case 'mina':
-      s.mines.push({ id: s.nextId++, team: u.team, x, y });
+      s.mines.push({ id: s.nextId++, team: u.team, ownerId: u.id, x, y });
       log(s, '  Mina armada.');
       break;
     case 'reparo': {

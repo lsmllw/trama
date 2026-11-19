@@ -87,16 +87,17 @@ describe('matriz do Confronto', () => {
 });
 
 describe('lances', () => {
-  it('Leve 3, Pesado 1 pela frente; flanco +1, costas +2 vira Leitura', () => {
+  it('o peso define os lances; flanco e costas dão Leitura, não lances', () => {
     const s = game();
     const tank = find(s, 'azul', 'tank');
     const cav = find(s, 'vermelho', 'cavaleiro');
     face(s, cav, tank);
     expect(countLances(s, cav, tank).def.lances).toBe(1);
+    expect(countLances(s, cav, tank).atk).toMatchObject({ lances: 2, reads: 0 });
     face(s, cav, tank, 'flanco');
-    expect(countLances(s, cav, tank).atk).toMatchObject({ lances: 3, reads: 0 });
+    expect(countLances(s, cav, tank).atk).toMatchObject({ lances: 2, reads: 1 });
     face(s, cav, tank, 'costas');
-    expect(countLances(s, cav, tank).atk).toMatchObject({ lances: 3, reads: 1 });
+    expect(countLances(s, cav, tank).atk).toMatchObject({ lances: 2, reads: 2 });
   });
   it('exemplo do GDD: Finta na Recuperação causa 3, Golpe do Tank causa 16', () => {
     const s = game();
@@ -168,13 +169,60 @@ describe('movimento', () => {
     s.units.find((u) => u.team === 'vermelho')!.y = 0;
     esp.x = 6;
     esp.y = 11;
-    s.mines.push({ id: 99, team: 'vermelho', x: 6, y: 10 });
+    s.mines.push({ id: 99, team: 'vermelho', ownerId: 'V5', x: 6, y: 10 });
     beginActivation(s, esp.id);
     expect(destinations(s).some((p) => p.x === 6 && p.y === 9)).toBe(true);
     moveTo(s, 6, 9);
     expect([esp.x, esp.y]).toEqual([6, 10]);
     expect(esp.hp).toBe(CLASSES.espadachim.hp - 8);
     expect(s.mines.length).toBe(0);
+  });
+});
+
+describe('Blindado e Bombardeiro', () => {
+  it('Blindado anda 3 e só em terreno liso', () => {
+    const s = game(['blindado', ...TEAM.slice(1)]);
+    const bl = find(s, 'azul', 'blindado');
+    for (const u of s.units) if (u !== bl) u.alive = false;
+    bl.x = 3;
+    bl.y = 12; // perto de colina (3,10) e de floresta (7,12)
+    const reach = reachable(s, bl, CLASSES.blindado.mov);
+    for (const k of reach.keys()) {
+      const t = s.terrain[Math.floor(k / s.width)][k % s.width];
+      expect(['floresta', 'colina', 'ruina', 'lama']).not.toContain(t);
+    }
+    expect(CLASSES.blindado.mov).toBe(3);
+  });
+  it('mina num Blindado causa 16 e imobiliza na fase seguinte dele', () => {
+    const s = game(['blindado', ...TEAM.slice(1)]);
+    const bl = find(s, 'azul', 'blindado');
+    bl.x = 9;
+    bl.y = 12;
+    s.mines.push({ id: 98, team: 'vermelho', ownerId: 'V1', x: 9, y: 11 });
+    beginActivation(s, bl.id);
+    moveTo(s, 9, 10);
+    expect([bl.x, bl.y]).toEqual([9, 11]);
+    expect(bl.hp).toBe(CLASSES.blindado.hp - 16);
+    endPhase(s); // fase do Vermelho
+    endPhase(s); // fase do Azul: o Blindado está imobilizado
+    beginActivation(s, bl.id);
+    expect(destinations(s)).toEqual([]);
+  });
+  it('Bombardeiro planta mina desde o level 1, no máximo 3', () => {
+    const s = game(['bombardeiro', ...TEAM.slice(1)]);
+    const bo = find(s, 'azul', 'bombardeiro');
+    bo.x = 9;
+    bo.y = 12;
+    for (let i = 0; i < 3; i++) {
+      s.activeTeam = 'azul';
+      bo.activated = false;
+      beginActivation(s, bo.id);
+      const t = abilityTargets(s, bo)[i];
+      useAbility(s, t.x, t.y);
+      endActivation(s);
+    }
+    expect(s.mines.filter((m) => m.ownerId === bo.id).length).toBe(3);
+    expect(abilityTargets(s, bo)).toEqual([]);
   });
 });
 

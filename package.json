@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "sim": "tsx scripts/simulate.ts"
+    "sim": "tsx scripts/simulate.ts",
+    "balance": "tsx scripts/balance.ts",
+    "tune": "tsx scripts/tune.ts"
   },
   "devDependencies": {
     "tsx": "^4.23.15",

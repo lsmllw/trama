@@ -9,7 +9,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
   },
   atirador: {
     id: 'atirador', name: 'Atirador', abbr: 'At', arm: 'infantaria', weight: 'medio',
-    mov: 4, hp: 20, atq: 6, armadura: 3, stamina: 8, melee: false, moveAfterAction: false,
+    mov: 4, hp: 20, atq: 5, armadura: 3, stamina: 8, melee: false, moveAfterAction: false,
     ranged: { kind: 'tiro', min: 2, max: 4, mult: 2.0 },
     role: 'Dano à distância',
   },
@@ -20,14 +20,16 @@ export const CLASSES: Record<ClassId, ClassDef> = {
   },
   cavaleiro: {
     id: 'cavaleiro', name: 'Cavaleiro', abbr: 'Cv', arm: 'cavalaria', weight: 'medio',
-    mov: 6, hp: 26, atq: 8, armadura: 4, stamina: 9, melee: true, moveAfterAction: true,
+    mov: 6, hp: 26, atq: 7, armadura: 4, stamina: 9, melee: true, moveAfterAction: true,
     role: 'Flanqueador',
   },
   blindado: {
     id: 'blindado', name: 'Blindado', abbr: 'Bl', arm: 'cavalaria', weight: 'pesado',
-    mov: 5, hp: 32, atq: 9, armadura: 6, stamina: 7, melee: true, moveAfterAction: false,
+    mov: 3, hp: 32, atq: 9, armadura: 6, stamina: 7, melee: true, moveAfterAction: false,
     ranged: { kind: 'tiro', min: 2, max: 2, mult: 1.5 },
-    role: 'Rompedor',
+    forbidden: ['floresta', 'colina', 'ruina', 'lama'],
+    vehicle: true,
+    role: 'Rompedor; só anda em terreno liso',
   },
   morteiro: {
     id: 'morteiro', name: 'Morteiro', abbr: 'Mo', arm: 'artilharia', weight: 'leve',
@@ -37,7 +39,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
   },
   canhao: {
     id: 'canhao', name: 'Canhão', abbr: 'Ca', arm: 'artilharia', weight: 'pesado',
-    mov: 2, hp: 24, atq: 12, armadura: 4, stamina: 6, melee: false, moveAfterAction: false,
+    mov: 2, hp: 24, atq: 9, armadura: 4, stamina: 6, melee: false, moveAfterAction: false,
     ranged: { kind: 'canhao', min: 4, max: 8, mult: 1.5 },
     role: 'Dano pesado, cerco à Base',
   },
@@ -45,16 +47,16 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     id: 'bombardeiro', name: 'Bombardeiro', abbr: 'Bo', arm: 'engenharia', weight: 'leve',
     mov: 5, hp: 18, atq: 6, armadura: 2, stamina: 9, melee: false, moveAfterAction: false,
     ranged: { kind: 'granada', min: 1, max: 3, mult: 1.5 },
-    role: 'Granadas em área',
+    role: 'Minas e granadas antitanque',
   },
   mecanico: {
     id: 'mecanico', name: 'Mecânico', abbr: 'Me', arm: 'engenharia', weight: 'medio',
-    mov: 4, hp: 22, atq: 5, armadura: 4, stamina: 8, melee: true, moveAfterAction: false,
+    mov: 4, hp: 22, atq: 6, armadura: 4, stamina: 8, melee: true, moveAfterAction: false,
     role: 'Reparo, suporte a máquinas',
   },
   construtor: {
     id: 'construtor', name: 'Construtor', abbr: 'Co', arm: 'engenharia', weight: 'pesado',
-    mov: 3, hp: 30, atq: 5, armadura: 6, stamina: 7, melee: true, moveAfterAction: false,
+    mov: 3, hp: 30, atq: 7, armadura: 6, stamina: 7, melee: true, moveAfterAction: false,
     role: 'Barricadas',
   },
   medico: {
@@ -65,7 +67,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
   },
   espiao: {
     id: 'espiao', name: 'Espião', abbr: 'Ep', arm: 'suporte', weight: 'leve',
-    mov: 6, hp: 18, atq: 6, armadura: 2, stamina: 10, melee: true, moveAfterAction: true,
+    mov: 6, hp: 20, atq: 8, armadura: 2, stamina: 10, melee: true, moveAfterAction: true,
     role: 'Infiltração',
   },
 };
@@ -77,6 +79,13 @@ export const WEIGHT_LABEL: Record<Weight, string> = { leve: 'Leve', medio: 'Méd
 export const BASE_LANCES: Record<Weight, number> = { leve: 3, medio: 2, pesado: 1 };
 /** Força de cada lance. */
 export const FORCA: Record<Weight, number> = { leve: 1.0, medio: 1.3, pesado: 1.6 };
+/** Golpe × Golpe: multiplicador do mais pesado e do mais leve (iguais: os dois usam `even`). */
+export const CLASH_TIE = { heavier: 2.0, lighter: 1.0, even: 1.0 };
+/**
+ * Bônus por atacar pelo flanco e pelas costas. `mode: 'leitura'` dá Leituras (ver o lance do
+ * inimigo antes de escolher) em vez de lances: o peso define os lances, a posição define a informação.
+ */
+export const SIDE_BONUS: { flanco: number; costas: number; mode: 'lances' | 'leitura' } = { flanco: 1, costas: 2, mode: 'leitura' };
 /** Stamina gasta por lance. */
 export const LANCE_COST: Record<Weight, number> = { leve: 1, medio: 1, pesado: 2 };
 /** Esquiva passiva contra tiro direto. */
@@ -162,6 +171,8 @@ export interface AbilityDef {
   name: string;
   cost: number;
   desc: string;
+  /** Level em que é liberada (padrão: ABILITY_LEVEL). */
+  unlock?: number;
 }
 
 export const ABILITIES: Record<ClassId, AbilityDef> = {
@@ -172,15 +183,28 @@ export const ABILITIES: Record<ClassId, AbilityDef> = {
   blindado: { id: 'atropelar', name: 'Atropelar', cost: 2, desc: 'Empurra um inimigo adjacente 1 casa (ATQ − ARM). Se ele bater em algo, +6 de dano.' },
   morteiro: { id: 'fumaca', name: 'Fumaça', cost: 3, desc: 'Área 3×3 a 2–6 casas que bloqueia tiros até o fim da próxima rodada.' },
   canhao: { id: 'perfurante', name: 'Perfurante', cost: 3, desc: 'Tiro em linha (4–8) que atravessa e atinge até 2 unidades. Não pode ter andado.' },
-  bombardeiro: { id: 'mina', name: 'Mina', cost: 2, desc: 'Arma uma mina escondida a até 2 casas: 8 de dano em quem pisar.' },
-  mecanico: { id: 'reparo', name: 'Reparo', cost: 1, desc: 'Recupera 8 HP da sua Base, de uma barricada ou de um Blindado/Canhão adjacente.' },
+  bombardeiro: {
+    id: 'mina',
+    name: 'Mina terrestre',
+    cost: 1,
+    unlock: 1,
+    desc: 'Desde o level 1. Arma uma mina escondida a até 2 casas (no máximo 3 por Bombardeiro). 8 de dano em quem pisar; num Blindado, 16 e ele fica imobilizado na fase seguinte dele.',
+  },
+  mecanico: { id: 'reparo', name: 'Reparo', cost: 1, desc: 'Recupera 8 HP de um aliado adjacente, de uma barricada sua ou da sua Base.' },
   construtor: { id: 'barricada', name: 'Barricada', cost: 2, desc: 'Ergue uma barricada (15 HP) numa casa adjacente: bloqueia passagem e tiros.' },
   medico: { id: 'curaArea', name: 'Cura em área', cost: 2, desc: 'Cura 6 HP de todos os aliados a até 2 casas, inclusive ele.' },
   espiao: { id: 'furtar', name: 'Furtar', cost: 1, desc: 'Rouba um item de um inimigo adjacente.' },
 };
 
 export const MINE_DAMAGE = 8;
+/** Multiplicador da mina contra veículos (Blindado). */
+export const MINE_VEHICLE_MULT = 2;
+export const MAX_MINES_PER_OWNER = 3;
+/** Granada do Bombardeiro ignora esta fração da armadura de veículos (antitanque). */
+export const ANTITANK = { granadaArmorIgnore: 1 };
 export const BARRICADE_HP = 15;
 export const REPAIR_AMOUNT = 8;
 export const AREA_HEAL = 6;
 export const RAM_BONUS = 6;
+/** Reparo do Mecânico vale para qualquer aliado (não só Blindado/Canhão). */
+export const REPAIR_ANY = { value: true };
