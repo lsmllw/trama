@@ -85,7 +85,13 @@ export class GameView {
     side: h('aside', { class: 'side' }),
     hint: h('div', { class: 'hint' }),
     canvas: h('canvas', { id: 'board' }),
+    bar: h('div', { class: 'unit-bar' }),
+    tip: h('div', { class: 'unit-tip' }),
   };
+  /** Unidade mostrada na janelinha de informações (null = escondida). */
+  private tipUnit: string | null = null;
+  private tipFromCard = false;
+  private panning: { x: number; y: number } | null = null;
 
   constructor(
     private root: HTMLElement,
@@ -98,6 +104,11 @@ export class GameView {
   /** Estado atual (usado pelos testes automatizados no navegador). */
   get state(): GameState {
     return this.s;
+  }
+
+  /** Renderizador (testes automatizados). */
+  get board(): Renderer {
+    return this.renderer;
   }
 
   get isBusy(): boolean {
@@ -113,24 +124,54 @@ export class GameView {
     clear(this.root);
     this.root.append(
       this.el.top,
-      h('div', { class: 'layout' }, h('div', { class: 'board-wrap' }, this.el.canvas, this.el.hint), this.el.side),
+      h('div', { class: 'layout' }, h('div', { class: 'board-wrap' }, this.el.canvas, this.el.hint, this.el.bar), this.el.side),
     );
+    document.body.append(this.el.tip);
     this.renderer = new Renderer(this.el.canvas, this.s);
     this.el.canvas.addEventListener('click', (e) => {
       const p = this.renderer.cellAt(e.clientX, e.clientY, this.s);
       if (p) void this.onCellClick(p);
     });
     this.el.canvas.addEventListener('mousemove', (e) => {
+      if (this.panning) return;
       const p = this.renderer.cellAt(e.clientX, e.clientY, this.s);
       if (!p || !this.hover || !same(p, this.hover)) {
         this.hover = p;
         this.refreshHighlights();
       }
+      const u = p ? unitAt(this.s, p.x, p.y) : undefined;
+      if (u) {
+        this.tipFromCard = false;
+        this.showTip(u.id, e.clientX + 16, e.clientY + 12);
+      }
+      else this.hideTip();
     });
     this.el.canvas.addEventListener('mouseleave', () => {
       this.hover = null;
+      this.hideTip();
       this.refreshHighlights();
     });
+    // Zoom com a roda do mouse, apontado para o cursor.
+    this.el.canvas.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        this.renderer.zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+        this.hideTip();
+      },
+      { passive: false },
+    );
+    // Botão do meio arrastando: move a câmera.
+    this.el.canvas.addEventListener('mousedown', (e) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      this.panning = { x: e.clientX, y: e.clientY };
+      this.el.canvas.classList.add('panning');
+      this.hideTip();
+    });
+    this.el.canvas.addEventListener('auxclick', (e) => e.preventDefault());
+    window.addEventListener('mousemove', this.onPanMove);
+    window.addEventListener('mouseup', this.onPanEnd);
     this.el.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       this.escape();
@@ -147,6 +188,142 @@ export class GameView {
   destroy(): void {
     cancelAnimationFrame(this.raf);
     document.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('mousemove', this.onPanMove);
+    window.removeEventListener('mouseup', this.onPanEnd);
+    this.el.tip.remove();
+  }
+
+  private onPanMove = (e: MouseEvent) => {
+    if (!this.panning) return;
+    this.renderer.panBy(e.clientX - this.panning.x, e.clientY - this.panning.y);
+    this.panning = { x: e.clientX, y: e.clientY };
+  };
+
+  private onPanEnd = (e: MouseEvent) => {
+    if (e.button !== 1 || !this.panning) return;
+    this.panning = null;
+    this.el.canvas.classList.remove('panning');
+  };
+
+  /** Clique num card da barra: seleciona a unidade, abre o movimento e leva a câmera até ela. */
+  private selectFromCard(id: string): void {
+    const s = this.s;
+    const u = getUnit(s, id);
+    if (!u.alive) return;
+    this.renderer.focus(u.x, u.y, s);
+    if (this.isPlayerTurn() && !this.busy && u.team === PLAYER && !u.activated && s.activation?.unitId !== id) {
+      beginActivation(s, id);
+      this.mode = 'normal';
+    }
+    this.selectedId = id;
+    this.afterChange();
+  }
+
+  // ---------- Janela de informações ----------
+
+  private showTip(unitId: string, x: number, y: number): void {
+    const u = this.s.units.find((v) => v.id === unitId);
+    if (!u || !u.alive) return this.hideTip();
+    if (this.tipUnit !== unitId) {
+      this.tipUnit = unitId;
+      this.fillTip();
+    }
+    const tip = this.el.tip;
+    tip.style.display = 'block';
+    const w = tip.offsetWidth;
+    const hgt = tip.offsetHeight;
+    tip.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, x))}px`;
+    tip.style.top = `${Math.max(8, Math.min(window.innerHeight - hgt - 8, y))}px`;
+  }
+
+  private hideTip(): void {
+    this.tipUnit = null;
+    this.tipFromCard = false;
+    this.el.tip.style.display = 'none';
+  }
+
+  private fillTip(): void {
+    const s = this.s;
+    const u = this.tipUnit ? s.units.find((v) => v.id === this.tipUnit) : undefined;
+    clear(this.el.tip);
+    if (!u) return;
+    const d = CLASSES[u.cls];
+    const ab = ABILITIES[u.cls];
+    const flags: string[] = [];
+    if (u.ready) flags.push('Prontidão');
+    if (u.oil) flags.push('Óleo ativo');
+    if (u.focus) flags.push('Foco ativo');
+    if (tauntOf(s, u)) flags.push('Provocada');
+    if (s.phase <= u.stuckUntil) flags.push('Imobilizada');
+    if (u.stamina <= 0) flags.push('Exausta');
+    const range = d.ranged ? `${d.ranged.min}–${d.ranged.max}` : '1';
+    this.el.tip.append(h('div', {},
+      h('div', { class: `tt-name ${u.team}` }, `${d.name} ${u.team === 'azul' ? 'Azul' : 'Vermelho'}`, h('span', { class: 'tt-level' }, ` · Level ${u.level}`)),
+      h('div', { class: 'tt-sub' }, `${WEIGHT_LABEL[d.weight]} · ${BASE_LANCES[d.weight]} lance(s) · ${d.role}`),
+      h(
+        'div',
+        { class: 'tt-grid' },
+        h('span', { class: 'tt-hp' }, `HP ${u.hp}/${u.maxHp}`),
+        h('span', { class: 'tt-st' }, `ST ${u.stamina}/${d.stamina}`),
+        h('span', { class: 'tt-atq' }, `ATQ ${unitAtq(u)}`),
+        h('span', { class: 'tt-arm' }, `ARM ${d.armadura}`),
+        h('span', { class: 'tt-mov' }, `MOV ${d.mov}`),
+        h('span', { class: 'tt-mov' }, `Alc ${range}`),
+      ),
+      h('div', { class: 'tt-ab' }, `${ab.name} (${ab.cost} ST)`, u.level < unlockLevel(u) ? h('span', { class: 'tt-lock' }, ` · level ${unlockLevel(u)}`) : null),
+      u.items.length
+        ? h(
+            'div',
+            { class: 'tt-items' },
+            u.items.map((it) => h('span', { class: `tt-item ${ITEMS[it].color}` }, ITEMS[it].name)),
+          )
+        : null,
+      flags.length ? h('div', { class: 'tt-flags' }, flags.join(' · ')) : null,
+      u.activated ? h('div', { class: 'tt-done' }, 'Já agiu nesta fase') : null,
+    ));
+  }
+
+  // ---------- Barra de unidades ----------
+
+  private renderBar(): void {
+    const s = this.s;
+    clear(this.el.bar);
+    const mine = s.units.filter((u) => u.team === PLAYER);
+    for (const u of mine) {
+      const d = CLASSES[u.cls];
+      const active = s.activation?.unitId === u.id;
+      const state = !u.alive ? 'Abatida' : active ? 'Em ação' : u.activated ? 'Já agiu' : this.isPlayerTurn() ? 'Pronta' : 'Aguardando';
+      const cls = ['uc', !u.alive ? 'dead' : '', u.activated && !active ? 'done' : '', active ? 'active' : '', this.selectedId === u.id && !active ? 'selected' : ''].join(' ');
+      const card = h(
+        'button',
+        {
+          class: cls,
+          disabled: !u.alive,
+          onclick: () => this.selectFromCard(u.id),
+          onmouseenter: (e: MouseEvent) => {
+            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            this.tipFromCard = true;
+            this.showTip(u.id, r.left, r.top - 8);
+            // Abre para cima do card.
+            const tip = this.el.tip;
+            tip.style.top = `${Math.max(8, r.top - tip.offsetHeight - 8)}px`;
+          },
+          onmouseleave: () => this.hideTip(),
+        },
+        h('div', { class: 'uc-head' }, h('span', { class: 'uc-abbr' }, d.abbr), h('span', { class: 'uc-name' }, d.name), h('span', { class: 'uc-lv' }, `Lv ${u.level}`)),
+        h('div', { class: 'uc-bar hp' }, h('div', { style: `width:${(100 * u.hp) / u.maxHp}%` })),
+        h('div', { class: 'uc-bar st' }, h('div', { style: `width:${(100 * u.stamina) / d.stamina}%` })),
+        h(
+          'div',
+          { class: 'uc-foot' },
+          h('span', { class: `uc-state ${state === 'Pronta' ? 'ready' : state === 'Em ação' ? 'acting' : ''}` }, state),
+          h('span', {}, u.items.map((it) => h('span', { class: `uc-dot ${ITEMS[it].color}` }))),
+        ),
+      );
+      this.el.bar.append(card);
+    }
+    // Os cards foram recriados: se o ponteiro já não está em nenhum, some com a janelinha.
+    if (this.tipFromCard && !this.el.bar.querySelector('.uc:hover')) this.hideTip();
   }
 
   // ---------- Fluxo ----------
@@ -399,6 +576,8 @@ export class GameView {
       this.quiet();
     } else if (k === 'h' && this.isPlayerTurn()) {
       this.toggleAbility();
+    } else if (e.key === '0' || e.key === 'Home') {
+      this.renderer.resetCamera();
     }
   };
 
@@ -475,12 +654,15 @@ export class GameView {
       const t = s.terrain[this.hover.y][this.hover.x];
       text += `   [${this.hover.x + 1},${this.hover.y + 1}] ${TERRAIN[t].label}`;
     }
+    text += '   · Roda: zoom · botão do meio + arrastar: câmera · 0: visão inteira';
     this.el.hint.textContent = text;
   }
 
   private renderPanels(): void {
     this.renderTop();
     this.renderSide();
+    this.renderBar();
+    if (this.tipUnit) this.fillTip();
   }
 
   private renderTop(): void {

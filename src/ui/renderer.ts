@@ -15,6 +15,7 @@ const AY = -7.5;
 const BX = 23;
 const BY = 19;
 const MARGIN = 14;
+const MAX_ZOOM = 3;
 /** Espaço acima da ponta de cima para torres e unidades em pé. */
 const HEADROOM = 50;
 
@@ -88,6 +89,9 @@ export class Renderer {
   private ox: number;
   private oy: number;
   anim: MoveAnim | null = null;
+  /** Câmera: zoom e deslocamento (pixels do canvas). */
+  private cam = { z: 1, tx: 0, ty: 0 };
+  private camAnim: { from: { z: number; tx: number; ty: number }; to: { z: number; tx: number; ty: number }; t0: number; ms: number } | null = null;
 
   constructor(
     readonly canvas: HTMLCanvasElement,
@@ -172,7 +176,10 @@ export class Renderer {
 
   draw(s: GameState, h: Highlights, now: number): void {
     const ctx = this.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.stepCamera(now);
+    ctx.setTransform(this.cam.z, 0, 0, this.cam.z, this.cam.tx, this.cam.ty);
     this.drawGround(s, now);
 
     const fill = (cells: Pos[], color: string) => {
@@ -195,6 +202,70 @@ export class Renderer {
 
     this.drawObjects(s, h, now);
     this.drawEffects(s, now);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  // ---------- Câmera ----------
+
+  get zoom(): number {
+    return this.cam.z;
+  }
+
+  /** Mantém o tabuleiro cobrindo a tela (sem mostrar vazio fora dele). */
+  private clamp(c: { z: number; tx: number; ty: number }) {
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const z = Math.min(MAX_ZOOM, Math.max(1, c.z));
+    return { z, tx: Math.min(0, Math.max(W - W * z, c.tx)), ty: Math.min(0, Math.max(H - H * z, c.ty)) };
+  }
+
+  /** Converte coordenadas da página em pixels do canvas (sem a câmera). */
+  toCanvas(clientX: number, clientY: number): Pt {
+    const r = this.canvas.getBoundingClientRect();
+    return { x: ((clientX - r.left) / r.width) * this.canvas.width, y: ((clientY - r.top) / r.height) * this.canvas.height };
+  }
+
+  /** Zoom mantendo fixo o ponto sob o cursor. */
+  zoomAt(clientX: number, clientY: number, factor: number): void {
+    this.camAnim = null;
+    const p = this.toCanvas(clientX, clientY);
+    const z = Math.min(MAX_ZOOM, Math.max(1, this.cam.z * factor));
+    const wx = (p.x - this.cam.tx) / this.cam.z;
+    const wy = (p.y - this.cam.ty) / this.cam.z;
+    this.cam = this.clamp({ z, tx: p.x - wx * z, ty: p.y - wy * z });
+  }
+
+  /** Arrasta a câmera (deslocamento em pixels da página). */
+  panBy(dxClient: number, dyClient: number): void {
+    this.camAnim = null;
+    const r = this.canvas.getBoundingClientRect();
+    const k = this.canvas.width / r.width;
+    this.cam = this.clamp({ z: this.cam.z, tx: this.cam.tx + dxClient * k, ty: this.cam.ty + dyClient * k });
+  }
+
+  /** Voa até a casa, se houver zoom. */
+  focus(x: number, y: number, s: GameState, ms = 320): void {
+    if (this.cam.z <= 1.02) return;
+    const p = this.P(x + 0.5, y + 0.5, this.elev(s, x, y) + 15);
+    const to = this.clamp({ z: this.cam.z, tx: this.canvas.width / 2 - p.x * this.cam.z, ty: this.canvas.height / 2 - p.y * this.cam.z });
+    this.camAnim = { from: { ...this.cam }, to, t0: performance.now(), ms };
+  }
+
+  resetCamera(): void {
+    this.camAnim = { from: { ...this.cam }, to: { z: 1, tx: 0, ty: 0 }, t0: performance.now(), ms: 250 };
+  }
+
+  private stepCamera(now: number): void {
+    const a = this.camAnim;
+    if (!a) return;
+    const t = Math.min(1, (now - a.t0) / a.ms);
+    const e = 1 - Math.pow(1 - t, 3);
+    this.cam = {
+      z: a.from.z + (a.to.z - a.from.z) * e,
+      tx: a.from.tx + (a.to.tx - a.from.tx) * e,
+      ty: a.from.ty + (a.to.ty - a.from.ty) * e,
+    };
+    if (t >= 1) this.camAnim = null;
   }
 
   private drawGround(s: GameState, now: number): void {
@@ -606,16 +677,17 @@ export class Renderer {
 
   /** Centro da casa em coordenadas da página (usado pelos testes automatizados). */
   clientPoint(x: number, y: number, s: GameState): Pt {
-    const p = this.P(x + 0.5, y + 0.5, this.elev(s, x, y));
+    const w = this.P(x + 0.5, y + 0.5, this.elev(s, x, y));
+    const p = { x: w.x * this.cam.z + this.cam.tx, y: w.y * this.cam.z + this.cam.ty };
     const r = this.canvas.getBoundingClientRect();
     return { x: r.left + (p.x / this.canvas.width) * r.width, y: r.top + (p.y / this.canvas.height) * r.height };
   }
 
   /** Casa sob o ponteiro: projeção inversa, conferindo colinas (que ficam mais altas). */
   cellAt(clientX: number, clientY: number, s: GameState): Pos | null {
-    const r = this.canvas.getBoundingClientRect();
-    const sx = ((clientX - r.left) / r.width) * this.canvas.width;
-    const sy = ((clientY - r.top) / r.height) * this.canvas.height;
+    const c = this.toCanvas(clientX, clientY);
+    const sx = (c.x - this.cam.tx) / this.cam.z;
+    const sy = (c.y - this.cam.ty) / this.cam.z;
     const dx = sx - this.ox;
     const dy = sy - this.oy;
     const det = AX * BY - BX * AY;

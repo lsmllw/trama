@@ -40,7 +40,11 @@ npm run tune                   # compara variações de números (edite scripts/
 
 | Ação | Mouse | Teclado |
 | --- | --- | --- |
-| Selecionar unidade | clique | — |
+| Selecionar unidade | clique no tabuleiro ou no card da barra de baixo | — |
+| Ver informações da unidade | passar o mouse sobre ela ou sobre o card | — |
+| Zoom | roda do mouse (aponta para o cursor) | — |
+| Mover a câmera | segurar o botão do meio e arrastar | — |
+| Voltar à visão inteira | — | 0 ou Home |
 | Mover / atacar / curar | clique na casa azul / vermelha / verde | — |
 | Mirar morteiro ou granada | botão Mirar | M |
 | Habilidade | botão da habilidade | H |
@@ -64,7 +68,7 @@ src/core/      regras puras, sem tela (determinísticas, com semente)
   game.ts        criação da partida, fases, ações, coleta, itens, fim de rodada
   abilities.ts   as 12 habilidades de classe
   ai.ts          IA de utilidade (inclui itens e habilidades) + IA de lances + simulação
-src/ui/        canvas 2.5D (renderer.ts), painéis, janela do Confronto, seleção de time
+src/ui/        canvas 2.5D com câmera (renderer.ts), painéis, barra de unidades, janela do Confronto, seleção de time
 tools/         genmap.py: gera e confere o mapa (simetria, caminhos, casas iniciais)
 tests/         testes das regras (Vitest)
 scripts/       simulação IA × IA
