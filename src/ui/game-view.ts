@@ -59,6 +59,7 @@ import {
 import type { ConfrontoState, GameState, LanceMemory, NodeColor, Pos, Target, Team, Unit } from '../core';
 import { openConfronto } from './confronto-modal';
 import { classIconSvg } from './icons';
+import { spriteDataUrl } from './sprites';
 import { clear, h } from './dom';
 import { Renderer } from './renderer';
 import type { Highlights } from './renderer';
@@ -368,6 +369,7 @@ export class GameView {
         h('span', { class: `tt-icon ${u.team}` }, classIconSvg(u.cls, 14, '#fff')),
         `${d.name} ${u.team === 'azul' ? 'Azul' : 'Vermelho'}`,
         h('span', { class: 'tt-level' }, ` · Level ${u.level}`),
+        h('img', { class: 'tt-sprite', src: spriteDataUrl(u.cls, u.team), alt: '' }),
       ),
       h('div', { class: 'tt-sub' }, `${WEIGHT_LABEL[d.weight]} · ${BASE_LANCES[d.weight]} lance(s) · ${d.role}`),
       h(
@@ -436,6 +438,7 @@ export class GameView {
           h('span', { class: `uc-state ${state === 'Pronta' ? 'ready' : state === 'Em ação' ? 'acting' : ''}` }, state),
           h('span', {}, u.items.map((it) => h('span', { class: `uc-dot ${ITEMS[it].color}` }))),
         ),
+        h('img', { class: 'uc-sprite', src: spriteDataUrl(u.cls, u.team), alt: '' }),
       );
       this.el.bar.append(card);
     }

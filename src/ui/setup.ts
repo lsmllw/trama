@@ -2,6 +2,7 @@ import { BASE_LANCES, CLASS_IDS, CLASSES, WEIGHT_LABEL } from '../core';
 import type { ClassId, Difficulty } from '../core';
 import { clear, h } from './dom';
 import { classIconSvg } from './icons';
+import { spriteDataUrl } from './sprites';
 
 export interface MatchConfig {
   azul: ClassId[];
@@ -53,6 +54,7 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
             render();
           },
         },
+        h('img', { class: 'setup-sprite', src: spriteDataUrl(id, 'azul'), alt: '' }),
         h('div', { class: 'name' }, h('span', { class: 'setup-icon' }, classIconSvg(id, 16, '#fff')), `${d.name}${n ? ` ×${n}` : ''}`),
         h('div', { class: 'meta' }, `${d.arm[0].toUpperCase()}${d.arm.slice(1)} · ${WEIGHT_LABEL[d.weight]} · ${BASE_LANCES[d.weight]} lance(s)`),
         h('div', { class: 'nums' }, `MOV ${d.mov} · Alcance ${rangeText(id)}`),
@@ -69,7 +71,7 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
         h(
           'p',
           { class: 'lead' },
-          'Escolha 5 unidades (no máximo 2 da mesma classe). O Vermelho é controlado pela máquina, com um time sorteado. Cada classe libera sua habilidade no level 2. Protótipo: sem arte e construções ainda.',
+          'Escolha 5 unidades (no máximo 2 da mesma classe). O Vermelho é controlado pela máquina, com um time sorteado. Cada classe libera sua habilidade no level 2. Protótipo: sem construções ainda.',
         ),
         h('div', { class: 'class-grid' }, cards),
         h(

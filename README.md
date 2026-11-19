@@ -75,7 +75,7 @@ src/core/      regras puras, sem tela (determinísticas, com semente)
   game.ts        criação da partida, fases, ações, coleta, itens, fim de rodada
   abilities.ts   as 12 habilidades de classe
   ai.ts          IA de utilidade (inclui itens e habilidades) + IA de lances + simulação
-src/ui/        canvas 2.5D com câmera e fundo (renderer.ts), símbolos das classes (icons.ts), painéis,
+src/ui/        canvas 2.5D com câmera e fundo (renderer.ts), sprites em pixel art (sprites.ts), símbolos das classes (icons.ts), painéis,
                barra de unidades, janela do Confronto, seleção de time
 tools/         genmap.py: gera e confere o mapa (simetria, caminhos, casas iniciais)
 tests/         testes das regras (Vitest)
@@ -114,4 +114,4 @@ As partidas duram cerca de 15 rodadas; ~78% terminam por eliminação ou Base de
 
 ## O que ainda falta
 
-Técnicas de Confronto por classe, Camuflagem do Espião, IA usando barricadas (deve ajudar a Engenharia), construções (Fortaleza, Acampamento, Igreja…), o triângulo de cores verde > roxo > laranja, arte e som.
+Técnicas de Confronto por classe, Camuflagem do Espião, IA usando barricadas (deve ajudar a Engenharia), construções (Fortaleza, Acampamento, Igreja…), o triângulo de cores verde > roxo > laranja, animações dos sprites e som.

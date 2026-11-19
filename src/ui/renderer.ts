@@ -4,7 +4,7 @@
 // Tudo que fica em pé é desenhado de trás para a frente (pela altura na tela).
 
 import { CLASSES, strikeCountdown } from '../core';
-import { drawClassIcon } from './icons';
+import { spriteAnchor, spriteCanvas } from './sprites';
 import type { AttackPreview, Dir, GameEvent, GameState, Pos, Team, Terrain, Unit } from '../core';
 
 /**
@@ -30,6 +30,8 @@ const BG_GEARS: [number, number, number, number][] = [
 ];
 /** Espaço acima da ponta de cima para torres e unidades em pé. */
 const HEADROOM = 50;
+/** Tamanho de cada pixel dos sprites, em pixels do tabuleiro. */
+const SPRITE_SCALE = 1.5;
 
 const TEAM_COLOR = { azul: '#3d7be0', vermelho: '#d4483b' } as const;
 const TEAM_LIGHT = { azul: '#6fa2f0', vermelho: '#ea7b6f' } as const;
@@ -1228,55 +1230,62 @@ export class Renderer {
     this.poly([tip, l, r], dim ? 'rgba(236,228,207,0.45)' : '#ece4cf');
 
     ctx.globalAlpha = dim ? 0.55 : 1;
-    // Corpo em pé.
-    const bw = def.weight === 'pesado' ? 26 : def.weight === 'medio' ? 22 : 19;
-    const bh = def.weight === 'pesado' ? 27 : def.weight === 'medio' ? 29 : 31;
-    const left = g.x - bw / 2;
-    const topY = g.y - bh - 2;
-    const grad = ctx.createLinearGradient(0, topY, 0, g.y);
-    grad.addColorStop(0, TEAM_LIGHT[u.team]);
-    grad.addColorStop(1, TEAM_DARK[u.team]);
     const lv = u.level;
-    roundRect(ctx, left, topY, bw, bh, 6);
+    // Base no chão na cor do time; a borda engrossa e vira latão/ouro conforme o level.
     ctx.save();
     if (lv >= 5) {
       ctx.shadowColor = rgba(TEAM_LIGHT[u.team], 0.9);
-      ctx.shadowBlur = 12;
+      ctx.shadowBlur = 10;
     }
-    ctx.fillStyle = grad;
+    ctx.fillStyle = rgba(TEAM_COLOR[u.team], 0.55);
+    ctx.beginPath();
+    ctx.ellipse(g.x, g.y, 12, 5, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
-    // A borda engrossa e vira latão/ouro conforme o level.
-    ctx.lineWidth = (def.weight === 'leve' ? 1 : def.weight === 'medio' ? 2 : 3) + (lv - 1) * 0.5;
-    ctx.strokeStyle = lv >= 5 ? '#ffd25a' : lv >= 3 ? '#d0a53a' : '#ece4cf';
+    ctx.lineWidth = 1 + (lv - 1) * 0.6;
+    ctx.strokeStyle = lv >= 5 ? '#ffd25a' : lv >= 3 ? '#d0a53a' : lv >= 2 ? '#ece4cf' : TEAM_LIGHT[u.team];
+    ctx.beginPath();
+    ctx.ellipse(g.x, g.y, 12, 5, 0, 0, Math.PI * 2);
     ctx.stroke();
     if (lv >= 4) {
-      // Ombreiras.
+      // Rebites de latão na borda.
       ctx.fillStyle = lv >= 5 ? '#ffd25a' : '#c9a227';
-      ctx.fillRect(left - 2, topY + 2, 5, 6);
-      ctx.fillRect(left + bw - 3, topY + 2, 5, 6);
-    }
-    if (lv >= 2) {
-      // Rebites.
-      ctx.fillStyle = lv >= 3 ? '#e2c26a' : 'rgba(236,228,207,0.8)';
-      for (const ry of lv >= 3 ? [topY + 4, topY + bh - 5] : [topY + bh - 5]) {
+      for (const a of [0.3, 1.25, 2.2, 3.45, 4.4, 5.35]) {
         ctx.beginPath();
-        ctx.arc(left + 3.5, ry, 1.2, 0, Math.PI * 2);
-        ctx.arc(left + bw - 3.5, ry, 1.2, 0, Math.PI * 2);
+        ctx.arc(g.x + Math.cos(a) * 12, g.y + Math.sin(a) * 5, 1.3, 0, Math.PI * 2);
         ctx.fill();
       }
     }
-    if (def.vehicle) {
-      // Rodas do Blindado.
-      ctx.fillStyle = '#2a2a2a';
-      for (const wx of [left + 4, left + bw - 4]) {
-        ctx.beginPath();
-        ctx.arc(wx, g.y - 3, 4, 0, Math.PI * 2);
-        ctx.fill();
-      }
+
+    // Sprite em pixel art, virado para onde a unidade olha (E e S apontam para a direita da tela).
+    const spr = spriteCanvas(u.cls, u.team);
+    const scale = SPRITE_SCALE;
+    const flip = u.facing === 'W' || u.facing === 'N';
+    const bob = isActive && !this.anim ? Math.round(Math.sin(performance.now() / 260) * 1) : 0;
+    const sw = spr.width * scale;
+    const sh = spr.height * scale;
+    const ax = spriteAnchor(u.cls) * scale;
+    const topY = g.y - sh + 3 * scale - bob;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    if (lv >= 5) {
+      ctx.shadowColor = rgba(TEAM_LIGHT[u.team], 0.85);
+      ctx.shadowBlur = 8;
+    } else if (lv >= 3) {
+      ctx.shadowColor = 'rgba(255, 210, 90, 0.45)';
+      ctx.shadowBlur = 4;
     }
-    // Símbolo da classe.
-    drawClassIcon(ctx, u.cls, g.x, topY + bh / 2 - 1, Math.min(bw - 5, 17), '#ffffff');
+    if (flip) {
+      ctx.translate(g.x, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(spr, -ax, topY, sw, sh);
+    } else {
+      ctx.drawImage(spr, g.x - ax, topY, sw, sh);
+    }
+    ctx.restore();
+    const bw = 24;
+    const bh = sh - 3 * scale;
+    const left = g.x - bw / 2;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
@@ -1442,15 +1451,6 @@ function shade(hex: string, amt: number): string {
   return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
 }
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
 
 /** Número fixo (0–1) por casa, para cada nó girar e flutuar fora de sincronia. */
 function nodeSeed(x: number, y: number): number {
