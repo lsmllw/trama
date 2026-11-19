@@ -1,6 +1,7 @@
 import { BASE_LANCES, CLASS_IDS, CLASSES, WEIGHT_LABEL } from '../core';
 import type { ClassId, Difficulty } from '../core';
 import { clear, h } from './dom';
+import { classIconSvg } from './icons';
 
 export interface MatchConfig {
   azul: ClassId[];
@@ -52,7 +53,7 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
             render();
           },
         },
-        h('div', { class: 'name' }, `${d.name}${n ? ` ×${n}` : ''}`),
+        h('div', { class: 'name' }, h('span', { class: 'setup-icon' }, classIconSvg(id, 16, '#fff')), `${d.name}${n ? ` ×${n}` : ''}`),
         h('div', { class: 'meta' }, `${d.arm[0].toUpperCase()}${d.arm.slice(1)} · ${WEIGHT_LABEL[d.weight]} · ${BASE_LANCES[d.weight]} lance(s)`),
         h('div', { class: 'nums' }, `MOV ${d.mov} · Alcance ${rangeText(id)}`),
         h('div', { class: 'nums' }, `HP ${d.hp} · ATQ ${d.atq} · ARM ${d.armadura} · ST ${d.stamina}`),

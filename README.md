@@ -29,7 +29,7 @@ npm run tune                   # compara variações de números (edite scripts/
 - **Prontidão (!):** quem não agiu na ativação ganha +1 lance ao defender.
 - **Stamina** (barra amarela): lances, Correr e Cura gastam; volta 3 por rodada. Com 0, a unidade fica Exausta.
 - **Morteiro:** marca uma cruz de 5 casas e o disparo cai no começo da próxima fase de quem atirou (o inimigo tem a fase dele para sair). **Granada:** explode na hora. Os dois atingem aliados.
-- **Level e XP:** acertar ou vencer um Confronto dá 1 XP, abater dá 2, coletar ou curar dá 1. Level 2 com 3 XP (até o 5). Cada level dá +3 HP máximo e +1 ATQ.
+- **Level e XP:** acertar ou vencer um Confronto dá 1 XP, abater dá 2, coletar ou curar dá 1. Level 2 com 3 XP (até o 5). Cada level dá +3 HP máximo e +1 ATQ. A peça, o card e o brilho da casa da unidade ficam mais fortes a cada level.
 - **Habilidades:** uma por classe, liberada no level 2, paga com Stamina. Avanço, Tiro certeiro, Provocar, Investida, Atropelar, Fumaça, Perfurante, Mina, Reparo, Barricada, Cura em área e Furtar.
 - **Itens:** coletados nos nós de cor (cada nó tem 3 cargas e recupera 1 por rodada). Verde dá Tônico (+12 HP), laranja dá Óleo de combate (+3 ATQ no próximo ataque), roxo dá Elixir de foco (+1 lance no próximo Confronto e +4 Stamina). A Fonte Prismática no centro dá qualquer um. Cada unidade carrega até 2.
 - **Base:** 60 HP; no fim de cada rodada acerta 5 em cada inimigo encostado nela.
@@ -42,8 +42,8 @@ npm run tune                   # compara variações de números (edite scripts/
 | --- | --- | --- |
 | Selecionar unidade | clique no tabuleiro ou no card da barra de baixo | — |
 | Ver informações da unidade | passar o mouse sobre ela ou sobre o card | — |
-| Zoom | roda do mouse (aponta para o cursor) | — |
-| Mover a câmera | segurar o botão do meio e arrastar | — |
+| Zoom | roda do mouse | — |
+| Mover a câmera | com zoom, a câmera segue o cursor; sem zoom, o tabuleiro só se mexe de leve sobre o fundo | — |
 | Voltar à visão inteira | — | 0 ou Home |
 | Mover / atacar / curar | clique na casa azul / vermelha / verde | — |
 | Mirar morteiro ou granada | botão Mirar | M |
@@ -68,7 +68,8 @@ src/core/      regras puras, sem tela (determinísticas, com semente)
   game.ts        criação da partida, fases, ações, coleta, itens, fim de rodada
   abilities.ts   as 12 habilidades de classe
   ai.ts          IA de utilidade (inclui itens e habilidades) + IA de lances + simulação
-src/ui/        canvas 2.5D com câmera (renderer.ts), painéis, barra de unidades, janela do Confronto, seleção de time
+src/ui/        canvas 2.5D com câmera e fundo (renderer.ts), símbolos das classes (icons.ts), painéis,
+               barra de unidades, janela do Confronto, seleção de time
 tools/         genmap.py: gera e confere o mapa (simetria, caminhos, casas iniciais)
 tests/         testes das regras (Vitest)
 scripts/       simulação IA × IA

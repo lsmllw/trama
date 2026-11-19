@@ -471,13 +471,102 @@ canvas#board.panning {
   gap: 6px;
   font-size: 12.5px;
 }
-.uc-abbr {
+.uc-icon,
+.tt-icon,
+.setup-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 5px;
   background: var(--azul);
-  color: #fff;
+  flex: 0 0 auto;
+}
+.tt-icon {
+  width: 19px;
+  height: 19px;
+  margin-right: 6px;
+  vertical-align: -4px;
+}
+.tt-icon.vermelho {
+  background: var(--vermelho);
+}
+.setup-icon {
+  margin-right: 7px;
+  vertical-align: -5px;
+}
+
+/* Cards ficam mais robustos a cada level: borda, armadura de latão, rebites e brilho. */
+.uc {
+  position: relative;
+}
+.uc.lv2 {
+  border-width: 2px;
+  border-top-width: 3px;
+  box-shadow: 0 0 8px rgba(61, 123, 224, 0.28);
+}
+.uc.lv3,
+.uc.lv4,
+.uc.lv5 {
+  border-color: #b8923a;
+  border-top-color: var(--azul);
+  background:
+    radial-gradient(circle at 6px 6px, #e2c26a 1.6px, transparent 2.2px),
+    radial-gradient(circle at calc(100% - 6px) 6px, #e2c26a 1.6px, transparent 2.2px),
+    radial-gradient(circle at 6px calc(100% - 6px), #e2c26a 1.6px, transparent 2.2px),
+    radial-gradient(circle at calc(100% - 6px) calc(100% - 6px), #e2c26a 1.6px, transparent 2.2px),
+    linear-gradient(160deg, #2c2e36, #23252b 55%, #2e291e);
+}
+.uc.lv3 {
+  border-width: 2px;
+  border-top-width: 4px;
+  box-shadow: 0 0 12px rgba(61, 123, 224, 0.38), inset 0 0 0 1px rgba(201, 162, 39, 0.35);
+}
+.uc.lv4 {
+  border-width: 3px;
+  border-top-width: 5px;
+  padding: 8px 10px;
+  box-shadow: 0 0 16px rgba(61, 123, 224, 0.5), inset 0 0 0 1px rgba(226, 194, 106, 0.55), inset 0 0 14px rgba(201, 162, 39, 0.18);
+}
+.uc.lv5 {
+  border-width: 3px;
+  border-top-width: 5px;
+  border-color: #ffd25a;
+  padding: 8px 10px;
+  box-shadow: 0 0 22px rgba(255, 210, 90, 0.55), 0 0 10px rgba(61, 123, 224, 0.6), inset 0 0 0 1px rgba(255, 230, 150, 0.7), inset 0 0 18px rgba(255, 210, 90, 0.22);
+  overflow: hidden;
+}
+.uc.lv5::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 30%, rgba(255, 240, 190, 0.18) 50%, transparent 70%);
+  background-size: 250% 100%;
+  animation: shimmer 2.6s linear infinite;
+  pointer-events: none;
+}
+@keyframes shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+.uc.lv3 .uc-lv,
+.uc.lv4 .uc-lv {
+  color: #e2c26a;
   font-weight: 700;
-  font-size: 11px;
-  border-radius: 4px;
-  padding: 1px 4px;
+}
+.uc.lv5 .uc-lv {
+  color: #ffe08a;
+  font-weight: 800;
+  text-shadow: 0 0 6px rgba(255, 210, 90, 0.8);
+}
+.uc.lv4 .uc-icon,
+.uc.lv5 .uc-icon {
+  box-shadow: 0 0 0 2px #c9a227;
 }
 .uc-name {
   font-weight: 600;

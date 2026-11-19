@@ -4,6 +4,7 @@
 // Tudo que fica em pé é desenhado de trás para a frente (pela altura na tela).
 
 import { CLASSES, strikeCountdown } from '../core';
+import { drawClassIcon } from './icons';
 import type { Dir, GameEvent, GameState, Pos, Team, Terrain, Unit } from '../core';
 
 /**
@@ -16,6 +17,17 @@ const BX = 23;
 const BY = 19;
 const MARGIN = 14;
 const MAX_ZOOM = 3;
+/** Quanto o tabuleiro se desloca com o mouse quando não há zoom (pixels). */
+const PARALLAX_BOARD = { x: 16, y: 10 };
+/** Engrenagens do fundo: posição (fração da tela), raio e velocidade de giro. */
+const BG_GEARS: [number, number, number, number][] = [
+  [0.08, 0.14, 46, 0.00012],
+  [0.17, 0.07, 26, -0.0002],
+  [0.9, 0.12, 60, -0.0001],
+  [0.97, 0.3, 30, 0.00018],
+  [0.12, 0.88, 38, 0.00014],
+  [0.86, 0.9, 50, -0.00011],
+];
 /** Espaço acima da ponta de cima para torres e unidades em pé. */
 const HEADROOM = 50;
 
@@ -90,7 +102,14 @@ export class Renderer {
   private oy: number;
   anim: MoveAnim | null = null;
   /** Câmera: zoom e deslocamento (pixels do canvas). */
-  private cam = { z: 1, tx: 0, ty: 0 };
+  cam = { z: 1, tx: 0, ty: 0 };
+  private zTarget = 1;
+  /** Onde o cursor está no canvas (0–1), ou null fora dele; e a versão suavizada que a câmera segue. */
+  private pointerFrac: Pt | null = null;
+  private follow: Pt = { x: 0.5, y: 0.5 };
+  /** Depois de voar até uma unidade, a câmera só volta a seguir quando o mouse mexer no tabuleiro. */
+  private followPaused = false;
+  private lastNow = 0;
   private camAnim: { from: { z: number; tx: number; ty: number }; to: { z: number; tx: number; ty: number }; t0: number; ms: number } | null = null;
 
   constructor(
@@ -179,7 +198,9 @@ export class Renderer {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.stepCamera(now);
+    this.drawBackground(now);
     ctx.setTransform(this.cam.z, 0, 0, this.cam.z, this.cam.tx, this.cam.ty);
+    this.drawBoardShadow(s);
     this.drawGround(s, now);
 
     const fill = (cells: Pos[], color: string) => {
@@ -199,6 +220,7 @@ export class Renderer {
     this.drawStrikes(s, now);
     this.drawMines(s, h);
     if (h.hover) this.poly(this.quad(h.hover.x, h.hover.y, this.elev(s, h.hover.x, h.hover.y)), 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.75)', 1.5);
+    this.drawLevelGlows(s, now);
 
     this.drawObjects(s, h, now);
     this.drawEffects(s, now);
@@ -225,48 +247,163 @@ export class Renderer {
     return { x: ((clientX - r.left) / r.width) * this.canvas.width, y: ((clientY - r.top) / r.height) * this.canvas.height };
   }
 
-  /** Zoom mantendo fixo o ponto sob o cursor. */
-  zoomAt(clientX: number, clientY: number, factor: number): void {
-    this.camAnim = null;
+  /** Posição do cursor (coordenadas da página), ou null quando sai do tabuleiro. */
+  pointer(clientX: number | null, clientY = 0): void {
+    if (clientX === null) {
+      this.pointerFrac = null;
+      return;
+    }
     const p = this.toCanvas(clientX, clientY);
-    const z = Math.min(MAX_ZOOM, Math.max(1, this.cam.z * factor));
-    const wx = (p.x - this.cam.tx) / this.cam.z;
-    const wy = (p.y - this.cam.ty) / this.cam.z;
-    this.cam = this.clamp({ z, tx: p.x - wx * z, ty: p.y - wy * z });
+    // Uma margem nas bordas facilita chegar aos cantos do mapa.
+    const fx = (p.x / this.canvas.width - 0.08) / 0.84;
+    const fy = (p.y / this.canvas.height - 0.08) / 0.84;
+    this.pointerFrac = { x: Math.min(1, Math.max(0, fx)), y: Math.min(1, Math.max(0, fy)) };
+    this.followPaused = false;
   }
 
-  /** Arrasta a câmera (deslocamento em pixels da página). */
-  panBy(dxClient: number, dyClient: number): void {
+  /** Zoom pela roda do mouse; a câmera passa a seguir o cursor. */
+  zoomAt(clientX: number, clientY: number, factor: number): void {
     this.camAnim = null;
-    const r = this.canvas.getBoundingClientRect();
-    const k = this.canvas.width / r.width;
-    this.cam = this.clamp({ z: this.cam.z, tx: this.cam.tx + dxClient * k, ty: this.cam.ty + dyClient * k });
+    this.pointer(clientX, clientY);
+    this.zTarget = Math.min(MAX_ZOOM, Math.max(1, this.zTarget * factor));
   }
 
   /** Voa até a casa, se houver zoom. */
   focus(x: number, y: number, s: GameState, ms = 320): void {
-    if (this.cam.z <= 1.02) return;
+    if (this.zTarget <= 1.02) return;
+    const z = this.zTarget;
     const p = this.P(x + 0.5, y + 0.5, this.elev(s, x, y) + 15);
-    const to = this.clamp({ z: this.cam.z, tx: this.canvas.width / 2 - p.x * this.cam.z, ty: this.canvas.height / 2 - p.y * this.cam.z });
+    const to = this.clamp({ z, tx: this.canvas.width / 2 - p.x * z, ty: this.canvas.height / 2 - p.y * z });
     this.camAnim = { from: { ...this.cam }, to, t0: performance.now(), ms };
+    this.followPaused = true;
   }
 
   resetCamera(): void {
-    this.camAnim = { from: { ...this.cam }, to: { z: 1, tx: 0, ty: 0 }, t0: performance.now(), ms: 250 };
+    this.camAnim = null;
+    this.zTarget = 1;
   }
 
   private stepCamera(now: number): void {
+    const dt = this.lastNow ? Math.min(64, now - this.lastNow) : 16;
+    this.lastNow = now;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
     const a = this.camAnim;
-    if (!a) return;
-    const t = Math.min(1, (now - a.t0) / a.ms);
-    const e = 1 - Math.pow(1 - t, 3);
+    if (a) {
+      const t = Math.min(1, (now - a.t0) / a.ms);
+      const e = 1 - Math.pow(1 - t, 3);
+      this.cam = {
+        z: a.from.z + (a.to.z - a.from.z) * e,
+        tx: a.from.tx + (a.to.tx - a.from.tx) * e,
+        ty: a.from.ty + (a.to.ty - a.from.ty) * e,
+      };
+      if (t >= 1) {
+        this.camAnim = null;
+        // Continua daqui quando voltar a seguir o cursor, sem pulo.
+        const z = this.cam.z;
+        this.follow = { x: W - W * z ? this.cam.tx / (W - W * z) : 0.5, y: H - H * z ? this.cam.ty / (H - H * z) : 0.5 };
+      }
+      return;
+    }
+    const k = 1 - Math.exp(-dt / 140);
+    if (this.pointerFrac && !this.followPaused) {
+      this.follow.x += (this.pointerFrac.x - this.follow.x) * k;
+      this.follow.y += (this.pointerFrac.y - this.follow.y) * k;
+    }
+    const z = this.cam.z + (this.zTarget - this.cam.z) * (1 - Math.exp(-dt / 90));
+    // Com zoom, a câmera mostra a parte do tabuleiro para onde o cursor aponta.
+    // Sem zoom, sobra só um leve deslocamento (parallax) do tabuleiro sobre o fundo.
+    const fade = Math.min(1, Math.max(0, (1.4 - z) / 0.4));
     this.cam = {
-      z: a.from.z + (a.to.z - a.from.z) * e,
-      tx: a.from.tx + (a.to.tx - a.from.tx) * e,
-      ty: a.from.ty + (a.to.ty - a.from.ty) * e,
+      z,
+      tx: (W - W * z) * this.follow.x + fade * (0.5 - this.follow.x) * PARALLAX_BOARD.x,
+      ty: (H - H * z) * this.follow.y + fade * (0.5 - this.follow.y) * PARALLAX_BOARD.y,
     };
-    if (t >= 1) this.camAnim = null;
   }
+
+  // ---------- Plano de fundo ----------
+
+  private drawBackground(now: number): void {
+    const ctx = this.ctx;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#13151b');
+    g.addColorStop(0.6, '#181920');
+    g.addColorStop(1, '#1f1b17');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    const off = (depth: number) => ({ x: (0.5 - this.follow.x) * depth, y: (0.5 - this.follow.y) * depth * 0.6 });
+
+    // Engrenagens distantes.
+    let o = off(5);
+    ctx.save();
+    ctx.translate(o.x, o.y);
+    for (const [gx, gy, r, sp] of BG_GEARS) drawGear(ctx, gx * W, gy * H, r, now * sp, 'rgba(201, 162, 39, 0.05)');
+    ctx.restore();
+
+    // Serra ao longe, embaixo.
+    o = off(9);
+    ctx.fillStyle = 'rgba(10, 11, 14, 0.55)';
+    ctx.beginPath();
+    ctx.moveTo(-20 + o.x, H + 10);
+    for (let i = 0; i <= 24; i++) {
+      const x = (i / 24) * (W + 40) - 20 + o.x;
+      const y = H * 0.83 + Math.sin(i * 1.7) * 14 + Math.sin(i * 0.6) * 22 + o.y;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(W + 20 + o.x, H + 10);
+    ctx.closePath();
+    ctx.fill();
+
+    // Poeira e fuligem flutuando.
+    o = off(14);
+    for (let i = 0; i < 46; i++) {
+      const seed = (i * 9301 + 49297) % 233280;
+      const bx = (seed / 233280) * W;
+      const by = ((i * 7919) % 1000) / 1000;
+      const y = (((by * H - now * (0.006 + (i % 5) * 0.002)) % H) + H) % H;
+      const a = 0.05 + (i % 4) * 0.03;
+      ctx.fillStyle = `rgba(230, 210, 170, ${a})`;
+      ctx.fillRect(bx + o.x + Math.sin(now / 1800 + i) * 6, y + o.y, 2, 2);
+    }
+  }
+
+  /** Sombra do tabuleiro sobre o fundo, para ele "flutuar". */
+  private drawBoardShadow(s: GameState): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
+    ctx.shadowBlur = 36;
+    ctx.shadowOffsetY = 16;
+    this.poly([this.P(0, 0, -10), this.P(s.width, 0, -10), this.P(s.width, s.height, -10), this.P(0, s.height, -10)], '#1b1d22');
+    ctx.restore();
+  }
+
+  /** Brilho colorido na casa de cada unidade, mais forte a cada level. */
+  private drawLevelGlows(s: GameState, now: number): void {
+    const ctx = this.ctx;
+    for (const u of s.units) {
+      if (!u.alive) continue;
+      const p = this.drawPos(u, now);
+      const cx = Math.round(p.x);
+      const cy = Math.round(p.y);
+      const e = this.elev(s, cx, cy);
+      const lv = u.level;
+      const pulse = lv >= 4 ? 0.85 + 0.15 * Math.sin(now / 380 + cx) : 1;
+      const alpha = (0.14 + 0.11 * (lv - 1)) * pulse;
+      const c = this.P(p.x + 0.5, p.y + 0.5, e);
+      const g = ctx.createRadialGradient(c.x, c.y, 2, c.x, c.y, 26 + lv * 3);
+      g.addColorStop(0, rgba(TEAM_COLOR[u.team], alpha));
+      g.addColorStop(1, rgba(TEAM_COLOR[u.team], 0));
+      ctx.fillStyle = g;
+      const q = [this.P(p.x, p.y, e), this.P(p.x + 1, p.y, e), this.P(p.x + 1, p.y + 1, e), this.P(p.x, p.y + 1, e)];
+      this.poly(q);
+      ctx.fill();
+      if (lv >= 3) this.poly(q, undefined, rgba(lv >= 5 ? '#ffd25a' : TEAM_LIGHT[u.team], 0.25 + 0.1 * (lv - 3)), 1);
+    }
+  }
+
 
   private drawGround(s: GameState, now: number): void {
     const ctx = this.ctx;
@@ -576,12 +713,36 @@ export class Renderer {
     const grad = ctx.createLinearGradient(0, topY, 0, g.y);
     grad.addColorStop(0, TEAM_LIGHT[u.team]);
     grad.addColorStop(1, TEAM_DARK[u.team]);
+    const lv = u.level;
     roundRect(ctx, left, topY, bw, bh, 6);
+    ctx.save();
+    if (lv >= 5) {
+      ctx.shadowColor = rgba(TEAM_LIGHT[u.team], 0.9);
+      ctx.shadowBlur = 12;
+    }
     ctx.fillStyle = grad;
     ctx.fill();
-    ctx.lineWidth = def.weight === 'leve' ? 1 : def.weight === 'medio' ? 2 : 3;
-    ctx.strokeStyle = '#ece4cf';
+    ctx.restore();
+    // A borda engrossa e vira latão/ouro conforme o level.
+    ctx.lineWidth = (def.weight === 'leve' ? 1 : def.weight === 'medio' ? 2 : 3) + (lv - 1) * 0.5;
+    ctx.strokeStyle = lv >= 5 ? '#ffd25a' : lv >= 3 ? '#d0a53a' : '#ece4cf';
     ctx.stroke();
+    if (lv >= 4) {
+      // Ombreiras.
+      ctx.fillStyle = lv >= 5 ? '#ffd25a' : '#c9a227';
+      ctx.fillRect(left - 2, topY + 2, 5, 6);
+      ctx.fillRect(left + bw - 3, topY + 2, 5, 6);
+    }
+    if (lv >= 2) {
+      // Rebites.
+      ctx.fillStyle = lv >= 3 ? '#e2c26a' : 'rgba(236,228,207,0.8)';
+      for (const ry of lv >= 3 ? [topY + 4, topY + bh - 5] : [topY + bh - 5]) {
+        ctx.beginPath();
+        ctx.arc(left + 3.5, ry, 1.2, 0, Math.PI * 2);
+        ctx.arc(left + bw - 3.5, ry, 1.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     if (def.vehicle) {
       // Rodas do Blindado.
       ctx.fillStyle = '#2a2a2a';
@@ -591,11 +752,10 @@ export class Renderer {
         ctx.fill();
       }
     }
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 12px system-ui, sans-serif';
+    // Símbolo da classe.
+    drawClassIcon(ctx, u.cls, g.x, topY + bh / 2 - 1, Math.min(bw - 5, 17), '#ffffff');
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(def.abbr, g.x, topY + bh / 2);
 
     // Barras e marcas acima da cabeça.
     const hy = topY - 8;
@@ -721,6 +881,32 @@ function inside(p: Pt, poly: Pt[]): boolean {
     if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) ins = !ins;
   }
   return ins;
+}
+
+function rgba(hex: string, a: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+function drawGear(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, angle: number, color: string): void {
+  const teeth = Math.max(8, Math.round(r / 5));
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (let i = 0; i < teeth * 2; i++) {
+    const rr = i % 2 === 0 ? r : r * 0.82;
+    const a0 = (i / (teeth * 2)) * Math.PI * 2;
+    const a1 = ((i + 1) / (teeth * 2)) * Math.PI * 2;
+    ctx.lineTo(Math.cos(a0) * rr, Math.sin(a0) * rr);
+    ctx.lineTo(Math.cos(a1) * rr, Math.sin(a1) * rr);
+  }
+  ctx.closePath();
+  ctx.moveTo(r * 0.35, 0);
+  ctx.arc(0, 0, r * 0.35, 0, Math.PI * 2, true);
+  ctx.fill('evenodd');
+  ctx.restore();
 }
 
 /** Clareia (amt > 0) ou escurece (amt < 0) uma cor #rrggbb. */

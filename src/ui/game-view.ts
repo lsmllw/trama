@@ -58,6 +58,7 @@ import {
 } from '../core';
 import type { ConfrontoState, Dir, GameState, LanceMemory, NodeColor, Pos, Target, Team, Unit } from '../core';
 import { openConfronto } from './confronto-modal';
+import { classIconSvg } from './icons';
 import { clear, h } from './dom';
 import { Renderer } from './renderer';
 import type { Highlights } from './renderer';
@@ -91,7 +92,7 @@ export class GameView {
   /** Unidade mostrada na janelinha de informações (null = escondida). */
   private tipUnit: string | null = null;
   private tipFromCard = false;
-  private panning: { x: number; y: number } | null = null;
+
 
   constructor(
     private root: HTMLElement,
@@ -133,7 +134,7 @@ export class GameView {
       if (p) void this.onCellClick(p);
     });
     this.el.canvas.addEventListener('mousemove', (e) => {
-      if (this.panning) return;
+      this.renderer.pointer(e.clientX, e.clientY);
       const p = this.renderer.cellAt(e.clientX, e.clientY, this.s);
       if (!p || !this.hover || !same(p, this.hover)) {
         this.hover = p;
@@ -147,6 +148,7 @@ export class GameView {
       else this.hideTip();
     });
     this.el.canvas.addEventListener('mouseleave', () => {
+      this.renderer.pointer(null);
       this.hover = null;
       this.hideTip();
       this.refreshHighlights();
@@ -161,17 +163,11 @@ export class GameView {
       },
       { passive: false },
     );
-    // Botão do meio arrastando: move a câmera.
+    // O botão do meio não deve abrir a rolagem automática do navegador.
     this.el.canvas.addEventListener('mousedown', (e) => {
-      if (e.button !== 1) return;
-      e.preventDefault();
-      this.panning = { x: e.clientX, y: e.clientY };
-      this.el.canvas.classList.add('panning');
-      this.hideTip();
+      if (e.button === 1) e.preventDefault();
     });
     this.el.canvas.addEventListener('auxclick', (e) => e.preventDefault());
-    window.addEventListener('mousemove', this.onPanMove);
-    window.addEventListener('mouseup', this.onPanEnd);
     this.el.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       this.escape();
@@ -188,22 +184,8 @@ export class GameView {
   destroy(): void {
     cancelAnimationFrame(this.raf);
     document.removeEventListener('keydown', this.onKey);
-    window.removeEventListener('mousemove', this.onPanMove);
-    window.removeEventListener('mouseup', this.onPanEnd);
     this.el.tip.remove();
   }
-
-  private onPanMove = (e: MouseEvent) => {
-    if (!this.panning) return;
-    this.renderer.panBy(e.clientX - this.panning.x, e.clientY - this.panning.y);
-    this.panning = { x: e.clientX, y: e.clientY };
-  };
-
-  private onPanEnd = (e: MouseEvent) => {
-    if (e.button !== 1 || !this.panning) return;
-    this.panning = null;
-    this.el.canvas.classList.remove('panning');
-  };
 
   /** Clique num card da barra: seleciona a unidade, abre o movimento e leva a câmera até ela. */
   private selectFromCard(id: string): void {
@@ -258,7 +240,13 @@ export class GameView {
     if (u.stamina <= 0) flags.push('Exausta');
     const range = d.ranged ? `${d.ranged.min}–${d.ranged.max}` : '1';
     this.el.tip.append(h('div', {},
-      h('div', { class: `tt-name ${u.team}` }, `${d.name} ${u.team === 'azul' ? 'Azul' : 'Vermelho'}`, h('span', { class: 'tt-level' }, ` · Level ${u.level}`)),
+      h(
+        'div',
+        { class: `tt-name ${u.team}` },
+        h('span', { class: `tt-icon ${u.team}` }, classIconSvg(u.cls, 14, '#fff')),
+        `${d.name} ${u.team === 'azul' ? 'Azul' : 'Vermelho'}`,
+        h('span', { class: 'tt-level' }, ` · Level ${u.level}`),
+      ),
       h('div', { class: 'tt-sub' }, `${WEIGHT_LABEL[d.weight]} · ${BASE_LANCES[d.weight]} lance(s) · ${d.role}`),
       h(
         'div',
@@ -293,7 +281,7 @@ export class GameView {
       const d = CLASSES[u.cls];
       const active = s.activation?.unitId === u.id;
       const state = !u.alive ? 'Abatida' : active ? 'Em ação' : u.activated ? 'Já agiu' : this.isPlayerTurn() ? 'Pronta' : 'Aguardando';
-      const cls = ['uc', !u.alive ? 'dead' : '', u.activated && !active ? 'done' : '', active ? 'active' : '', this.selectedId === u.id && !active ? 'selected' : ''].join(' ');
+      const cls = ['uc', `lv${u.level}`, !u.alive ? 'dead' : '', u.activated && !active ? 'done' : '', active ? 'active' : '', this.selectedId === u.id && !active ? 'selected' : ''].join(' ');
       const card = h(
         'button',
         {
@@ -310,7 +298,7 @@ export class GameView {
           },
           onmouseleave: () => this.hideTip(),
         },
-        h('div', { class: 'uc-head' }, h('span', { class: 'uc-abbr' }, d.abbr), h('span', { class: 'uc-name' }, d.name), h('span', { class: 'uc-lv' }, `Lv ${u.level}`)),
+        h('div', { class: 'uc-head' }, h('span', { class: 'uc-icon', title: d.name }, classIconSvg(u.cls, 15, '#fff')), h('span', { class: 'uc-name' }, d.name), h('span', { class: 'uc-lv' }, `Lv ${u.level}`)),
         h('div', { class: 'uc-bar hp' }, h('div', { style: `width:${(100 * u.hp) / u.maxHp}%` })),
         h('div', { class: 'uc-bar st' }, h('div', { style: `width:${(100 * u.stamina) / d.stamina}%` })),
         h(
@@ -654,7 +642,7 @@ export class GameView {
       const t = s.terrain[this.hover.y][this.hover.x];
       text += `   [${this.hover.x + 1},${this.hover.y + 1}] ${TERRAIN[t].label}`;
     }
-    text += '   · Roda: zoom · botão do meio + arrastar: câmera · 0: visão inteira';
+    text += '   · Roda: zoom (a câmera segue o mouse) · 0: visão inteira';
     this.el.hint.textContent = text;
   }
 
