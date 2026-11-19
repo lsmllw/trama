@@ -481,7 +481,8 @@ export class GameView {
   private async runAiPhase(): Promise<void> {
     this.busy = true;
     this.mode = 'normal';
-    this.holdCamera();
+    // Fim da sua fase: a câmera se solta para você assistir a IA como quiser (mouse e zoom).
+    this.releaseCamera();
     this.quiet();
     const s = this.s;
     const team = s.activeTeam;
@@ -671,8 +672,13 @@ export class GameView {
 
   private onKey = (e: KeyboardEvent) => {
     if (document.querySelector('.modal-bg')) return;
-    if (this.busy) return;
     const k = e.key.toLowerCase();
+    if (this.busy) {
+      // Durante a fase da IA, só os comandos de câmera.
+      if (e.key === 'Escape' || k === 'x') this.releaseCamera();
+      else if (e.key === '0' || e.key === 'Home') this.renderer.resetCamera();
+      return;
+    }
     const steps: Record<string, [number, number]> = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
     if (steps[e.key]) {
       e.preventDefault();

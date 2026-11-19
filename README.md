@@ -51,7 +51,7 @@ npm run tune                   # compara variações de números (edite scripts/
 | Voltar (sair da mira, desfazer o movimento, desmarcar) e soltar a câmera | botão Desfazer | X (ou Esc) |
 | Ver informações da unidade | passar o mouse sobre ela ou sobre o card | — |
 | Zoom | roda do mouse | — |
-| Mover a câmera | sem unidade selecionada: com zoom, segue o cursor; sem zoom, o tabuleiro só se mexe de leve sobre o fundo | — |
+| Mover a câmera | sem unidade selecionada (e durante toda a fase da IA): com zoom, segue o cursor; sem zoom, o tabuleiro só se mexe de leve sobre o fundo | — |
 | Câmera ao escolher o movimento | com a unidade selecionada e as casas de movimento abertas, desliza suavemente para o lado em que o mouse está | desliza até centralizar a casa do cursor (setas) |
 | Voltar à visão inteira | — | 0 ou Home |
 | Mover / atacar / curar | clique na casa azul / vermelha / verde | setas movem o cursor só pelas casas válidas (alcance de movimento, alvos ou mira; pulam buracos), Espaço confirma a casa |
