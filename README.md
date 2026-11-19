@@ -46,6 +46,7 @@ npm run tune                   # compara variações de números (edite scripts/
 | Ver informações da unidade | passar o mouse sobre ela ou sobre o card | — |
 | Zoom | roda do mouse | — |
 | Mover a câmera | sem unidade selecionada: com zoom, segue o cursor; sem zoom, o tabuleiro só se mexe de leve sobre o fundo | — |
+| Câmera ao escolher o movimento | com a unidade selecionada e as casas de movimento abertas, desliza suavemente para o lado em que o mouse está | desliza até centralizar a casa do cursor (setas) |
 | Voltar à visão inteira | — | 0 ou Home |
 | Mover / atacar / curar | clique na casa azul / vermelha / verde | setas movem o cursor, Espaço confirma a casa |
 | Mirar morteiro ou granada | botão Mirar | M |

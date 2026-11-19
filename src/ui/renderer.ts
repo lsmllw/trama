@@ -114,6 +114,17 @@ export class Renderer {
   private lockId: string | null = null;
   /** Câmera parada onde está (depois de confirmar uma ação), até soltar com X. */
   private held: { tx: number; ty: number } | null = null;
+  /**
+   * Escolha da casa de movimento: com a câmera presa na unidade, ela passa a seguir suavemente o
+   * mouse (deslocando-se para o lado em que ele está) ou a casa escolhida com as setas.
+   */
+  private aimOn = false;
+  private aimSrc: 'mouse' | 'key' | null = null;
+  private aimCell: Pos | null = null;
+  private aimFrac: Pt = { x: 0.5, y: 0.5 };
+  /** Onde o mouse estava quando a mira começou (o mouse só assume depois de andar um pouco). */
+  private aimStart: Pt | null = null;
+  private lastPointer: Pt | null = null;
 
   constructor(
     readonly canvas: HTMLCanvasElement,
@@ -254,6 +265,7 @@ export class Renderer {
   pointer(clientX: number | null, clientY = 0): void {
     if (clientX === null) {
       this.pointerFrac = null;
+      this.lastPointer = null;
       return;
     }
     const p = this.toCanvas(clientX, clientY);
@@ -261,6 +273,77 @@ export class Renderer {
     const fx = (p.x / this.canvas.width - 0.08) / 0.84;
     const fy = (p.y / this.canvas.height - 0.08) / 0.84;
     this.pointerFrac = { x: Math.min(1, Math.max(0, fx)), y: Math.min(1, Math.max(0, fy)) };
+    this.lastPointer = p;
+    if (this.aimOn) {
+      if (this.aimSrc !== 'mouse') {
+        // Um tremor do mouse não tira a câmera da unidade (ou da casa escolhida pelo teclado).
+        if (!this.aimStart) this.aimStart = p;
+        else if (Math.hypot(p.x - this.aimStart.x, p.y - this.aimStart.y) > 14) this.aimSrc = 'mouse';
+      }
+      if (this.aimSrc === 'mouse') this.aimFrac = { ...this.pointerFrac };
+    }
+  }
+
+  /** Liga/desliga o modo de escolha da casa de movimento (a câmera parte centralizada na unidade). */
+  setAim(on: boolean): void {
+    if (on === this.aimOn) return;
+    this.aimOn = on;
+    this.aimSrc = null;
+    this.aimCell = null;
+    this.aimStart = this.lastPointer;
+  }
+
+  get aiming(): boolean {
+    return this.aimOn && !!this.lockId && !this.held;
+  }
+
+  /** Cursor do teclado na casa (x, y): a câmera desliza até centralizá-la. */
+  aimAt(x: number, y: number): void {
+    this.aimSrc = 'key';
+    this.aimCell = { x, y };
+    this.aimStart = this.lastPointer;
+  }
+
+  /** Ponto do mundo que a câmera deve centralizar durante a mira (null fora dela). */
+  private aimCenter(s: GameState, unitPt: Pt, z: number): Pt | null {
+    if (!this.aimOn || !this.aimSrc) return null;
+    let c: Pt;
+    if (this.aimSrc === 'key' && this.aimCell) {
+      const { x, y } = this.aimCell;
+      c = this.P(x + 0.5, y + 0.5, this.elev(s, x, y) + 6);
+    } else {
+      // O mouse desloca a câmera para o lado em que está; perto do centro (zona morta) nada muda.
+      const dead = 0.14;
+      const shape = (f: number) => {
+        const d = f - 0.5;
+        return Math.sign(d) * Math.max(0, Math.abs(d) - dead) / (0.5 - dead);
+      };
+      const W = this.canvas.width;
+      const H = this.canvas.height;
+      c = { x: unitPt.x + shape(this.aimFrac.x) * 0.45 * (W / z), y: unitPt.y + shape(this.aimFrac.y) * 0.45 * (H / z) };
+    }
+    // Não deixa a câmera fugir do tabuleiro.
+    const corners = [this.P(0, 0, 0), this.P(s.width, 0, 0), this.P(0, s.height, 0), this.P(s.width, s.height, 0)];
+    const xs = corners.map((q) => q.x);
+    const ys = corners.map((q) => q.y);
+    return {
+      x: Math.min(Math.max(...xs), Math.max(Math.min(...xs), c.x)),
+      y: Math.min(Math.max(...ys), Math.max(Math.min(...ys), c.y)),
+    };
+  }
+
+  /** Onde a casa vai aparecer (coordenadas da página) quando a câmera terminar de chegar. */
+  settledClientPoint(x: number, y: number, s: GameState): Pt {
+    const locked = this.lockId ? s.units.find((u) => u.id === this.lockId && u.alive) : undefined;
+    const z = this.zTarget;
+    const c = locked && !this.held ? this.aimCenter(s, this.P(locked.x + 0.5, locked.y + 0.5, 0), z) : null;
+    if (!c) return this.clientPoint(x, y, s);
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const w = this.P(x + 0.5, y + 0.5, this.elev(s, x, y));
+    const p = { x: w.x * z + W / 2 - c.x * z, y: w.y * z + H / 2 - c.y * z };
+    const r = this.canvas.getBoundingClientRect();
+    return { x: r.left + (p.x / W) * r.width, y: r.top + (p.y / H) * r.height };
   }
 
   /**
@@ -344,6 +427,7 @@ export class Renderer {
     const zNext = this.cam.z + (this.zTarget - this.cam.z) * (1 - Math.exp(-dt / 90));
     const locked = this.lockId ? s.units.find((u) => u.id === this.lockId && u.alive) : undefined;
     let want: { tx: number; ty: number };
+    let aimed = false;
     if (this.held) {
       // Parada: fica onde estava; durante um zoom, mantém o centro da tela no lugar.
       const k = zNext / this.zTarget;
@@ -352,7 +436,10 @@ export class Renderer {
       // Centraliza na unidade (mesmo na borda do mapa) e acompanha enquanto ela anda.
       const p = this.drawPos(locked, now);
       const w = this.P(p.x + 0.5, p.y + 0.5, this.elev(s, Math.round(p.x), Math.round(p.y)) + 14);
-      want = { tx: W / 2 - w.x * zNext, ty: H / 2 - w.y * zNext };
+      // Escolhendo a casa de movimento, segue o mouse ou o cursor do teclado.
+      const c = this.anim ? null : this.aimCenter(s, w, zNext);
+      aimed = !!c;
+      want = { tx: W / 2 - (c ?? w).x * zNext, ty: H / 2 - (c ?? w).y * zNext };
     } else {
       const k = 1 - Math.exp(-dt / 140);
       if (this.pointerFrac) {
@@ -367,7 +454,7 @@ export class Renderer {
         ty: (H - H * zNext) * this.follow.y + fade * (0.5 - this.follow.y) * PARALLAX_BOARD.y,
       };
     }
-    const m = 1 - Math.exp(-dt / (locked ? 110 : 60));
+    const m = 1 - Math.exp(-dt / (aimed ? 170 : locked ? 110 : 60));
     this.cam = { z: zNext, tx: this.cam.tx + (want.tx - this.cam.tx) * m, ty: this.cam.ty + (want.ty - this.cam.ty) * m };
   }
 

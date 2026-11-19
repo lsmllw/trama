@@ -81,6 +81,8 @@ export class GameView {
   private busy = false;
   private hl: Highlights = emptyHighlights();
   private raf = 0;
+  /** Última posição do mouse sobre o tabuleiro (para refazer a casa sob ele quando a câmera desliza). */
+  private mouseAt: { x: number; y: number } | null = null;
   private el = {
     top: h('div', { class: 'topbar' }),
     side: h('aside', { class: 'side' }),
@@ -137,6 +139,7 @@ export class GameView {
     });
     this.el.canvas.addEventListener('mousemove', (e) => {
       this.renderer.pointer(e.clientX, e.clientY);
+      this.mouseAt = { x: e.clientX, y: e.clientY };
       this.kbCursor = false;
       const p = this.renderer.cellAt(e.clientX, e.clientY, this.s);
       if (!p || !this.hover || !same(p, this.hover)) {
@@ -152,6 +155,7 @@ export class GameView {
     });
     this.el.canvas.addEventListener('mouseleave', () => {
       this.renderer.pointer(null);
+      this.mouseAt = null;
       this.hover = null;
       this.hideTip();
       this.refreshHighlights();
@@ -178,6 +182,14 @@ export class GameView {
     document.addEventListener('keydown', this.onKey);
     const loop = (t: number) => {
       this.renderer.draw(this.s, this.hl, t);
+      // A câmera pode deslizar com o mouse parado: a casa sob ele acompanha.
+      if (this.mouseAt && !this.kbCursor) {
+        const p = this.renderer.cellAt(this.mouseAt.x, this.mouseAt.y, this.s);
+        if (p && (!this.hover || !same(p, this.hover))) {
+          this.hover = p;
+          this.refreshHighlights();
+        }
+      }
       this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
@@ -218,10 +230,12 @@ export class GameView {
     const y = Math.max(0, Math.min(s.height - 1, start.y + dy));
     this.hover = { x, y };
     this.kbCursor = true;
-    this.renderer.ensureVisible(x, y, s);
+    // Escolhendo o movimento, a câmera desliza até a casa; fora disso, só se ela sair da tela.
+    if (this.renderer.aiming) this.renderer.aimAt(x, y);
+    else this.renderer.ensureVisible(x, y, s);
     const u = unitAt(s, x, y);
     if (u) {
-      const pt = this.renderer.clientPoint(x, y, s);
+      const pt = this.renderer.settledClientPoint(x, y, s);
       this.tipFromCard = false;
       this.showTip(u.id, pt.x + 22, pt.y + 10);
     } else {
@@ -712,6 +726,8 @@ export class GameView {
       }
     }
     this.hl = hl;
+    // Câmera presa na unidade + casas de movimento abertas = modo de escolha do movimento.
+    this.renderer.setAim(hl.moves.length > 0 && !!s.activation && this.renderer.lockedOn === s.activation.unitId);
     this.renderHint();
   }
 
