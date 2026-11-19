@@ -35,20 +35,6 @@ const TEAM_COLOR = { azul: '#3d7be0', vermelho: '#d4483b' } as const;
 const TEAM_LIGHT = { azul: '#6fa2f0', vermelho: '#ea7b6f' } as const;
 const TEAM_DARK = { azul: '#1f3f73', vermelho: '#6e231c' } as const;
 
-const TERRAIN_FILL: Record<Terrain, string> = {
-  planicie: '#4a4e57',
-  floresta: '#34483b',
-  colina: '#5e584d',
-  ruina: '#4c4b4f',
-  lama: '#544838',
-  agua: '#22384f',
-  ponte: '#5f4f3f',
-  no_verde: '#4a4e57',
-  no_roxo: '#4a4e57',
-  no_laranja: '#4a4e57',
-  fonte: '#535867',
-  base: '#4a4e57',
-};
 const ELEVATION: Partial<Record<Terrain, number>> = { colina: 9 };
 const NODE_COLOR = { verde: '#6fd58a', roxo: '#b88cf0', laranja: '#f0a050', prisma: '#e6e6ff' } as const;
 const DIR_VEC: Record<Dir, [number, number]> = { N: [0, -1], S: [0, 1], E: [1, 0], W: [-1, 0] };
@@ -226,7 +212,8 @@ export class Renderer {
       for (const c of cells) this.poly(this.quad(c.x, c.y, this.elev(s, c.x, c.y)), undefined, color, 2);
     };
     fill(h.areaRange, 'rgba(255, 170, 60, 0.12)');
-    fill(h.moves, 'rgba(90, 160, 255, 0.34)');
+    fill(h.moves, 'rgba(70, 145, 255, 0.45)');
+    outline(h.moves, 'rgba(150, 200, 255, 0.35)');
     fill(h.heals, 'rgba(110, 230, 140, 0.34)');
     fill(h.areaPreview, 'rgba(255, 150, 40, 0.5)');
     fill(h.targets, 'rgba(255, 80, 70, 0.25)');
@@ -615,8 +602,8 @@ export class Renderer {
       {
         const t = s.terrain[y][x];
         const e = this.elev(s, x, y);
-        let color = TERRAIN_FILL[t];
-        if ((x + y) % 2 === 0 && t !== 'agua') color = shade(color, 0.06);
+        let color = this.groundColor(s, x, y);
+        if ((x + y) % 2 === 0 && t !== 'agua') color = shade(color, 0.04);
         if (e > 0) {
           this.box(x, y, x + 1, y + 1, 0, e, shade(color, 0.12), shade(color, -0.25), shade(color, -0.12));
         } else {
@@ -642,6 +629,19 @@ export class Renderer {
       ctx.lineTo(b.x, b.y);
     }
     ctx.stroke();
+  }
+
+  /**
+   * Cor do chão de cada casa (calculada uma vez por mapa): campos em tons de verde que escurecem
+   * perto das florestas e puxam para a cor de terra perto das colinas, com manchas suaves.
+   */
+  private groundCache: { terrain: Terrain[][]; colors: string[][] } | null = null;
+
+  private groundColor(s: GameState, x: number, y: number): string {
+    if (!this.groundCache || this.groundCache.terrain !== s.terrain) {
+      this.groundCache = { terrain: s.terrain, colors: buildGroundColors(s) };
+    }
+    return this.groundCache.colors[y][x];
   }
 
   private drawGroundMark(t: Terrain, x: number, y: number, e: number, now: number): void {
@@ -738,7 +738,7 @@ export class Renderer {
       }
     }
     for (const n of s.nodes) items.push({ depth: at(n.x + 0.5, n.y + 0.5), draw: () => this.drawNode(s, n.x, n.y, n.color, n.charges, now) });
-    for (const b of [s.bases.azul, s.bases.vermelho]) items.push({ depth: at(b.x + 0.5, b.y + 0.6), draw: () => this.drawBase(b.x, b.y, b.team, b.hp / b.maxHp, b.hp > 0) });
+    for (const b of [s.bases.azul, s.bases.vermelho]) items.push({ depth: at(b.x + 0.5, b.y + 0.6), draw: () => this.drawBase(b.x, b.y, b.team, b.hp / b.maxHp, b.hp > 0, now) });
     for (const b of s.barricades) items.push({ depth: at(b.x + 0.5, b.y + 0.55), draw: () => this.drawBarricade(b.x, b.y, b.team, b.hp) });
     for (const sm of s.smoke) for (const c of sm.cells) items.push({ depth: at(c.x + 0.5, c.y + 0.9), draw: () => this.drawSmoke(c.x, c.y, now) });
     for (const u of s.units) {
@@ -915,11 +915,13 @@ export class Renderer {
     ctx.restore();
   }
 
-  private drawBase(x: number, y: number, team: Team, frac: number, alive: boolean): void {
+  private drawBase(x: number, y: number, team: Team, frac: number, alive: boolean, now: number): void {
     const ctx = this.ctx;
     const height = alive ? 34 : 8;
     this.box(x + 0.08, y + 0.08, x + 0.92, y + 0.92, 0, height, alive ? TEAM_COLOR[team] : '#3a3a3a', alive ? TEAM_DARK[team] : '#262626', alive ? shade(TEAM_DARK[team], 0.1) : '#2e2e2e');
     if (!alive) return;
+    // Bandeira no mastro, atrás das ameias.
+    this.drawFlag(x + 0.5, y + 0.2, height, team, now);
     // Ameias.
     for (const fx of [0.12, 0.42, 0.72]) this.box(x + fx, y + 0.1, x + fx + 0.16, y + 0.28, height, 5, TEAM_LIGHT[team], TEAM_DARK[team], TEAM_DARK[team]);
     const f = this.P(x + 0.5, y + 0.92, height / 2);
@@ -930,6 +932,92 @@ export class Renderer {
     ctx.fillText('QG', f.x, f.y);
     const top = this.P(x + 0.5, y + 0.5, height + 14);
     this.bar(top.x - 15, top.y, 30, 4, frac, '#7fd36b');
+  }
+
+  /** Mastro com bandeira do time tremulando ao vento (onda que corre do mastro para a ponta). */
+  private drawFlag(fx: number, fy: number, baseH: number, team: Team, now: number): void {
+    const ctx = this.ctx;
+    const foot = this.P(fx, fy, baseH);
+    const poleH = 30;
+    const topY = foot.y - poleH;
+    // Mastro de latão.
+    ctx.strokeStyle = '#2a2420';
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    ctx.moveTo(foot.x, foot.y);
+    ctx.lineTo(foot.x, topY);
+    ctx.stroke();
+    ctx.strokeStyle = '#c9a54a';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(foot.x, foot.y);
+    ctx.lineTo(foot.x, topY);
+    ctx.stroke();
+    ctx.fillStyle = '#e8c45a';
+    ctx.beginPath();
+    ctx.arc(foot.x, topY - 1.5, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Pano: tiras verticais, cada uma deslocada pela onda; a ponta balança mais.
+    const len = 22;
+    const hgt = 13;
+    const N = 12;
+    const seed = team === 'azul' ? 0 : 1.7;
+    const wave = (i: number) => {
+      const u = i / N;
+      const gust = 1 + 0.35 * Math.sin(now / 1300 + seed);
+      return Math.sin(now / 170 - u * 4.2 + seed) * 2.4 * u * gust + Math.sin(now / 90 - u * 7 + seed) * 0.6 * u;
+    };
+    const top: Pt[] = [];
+    const bot: Pt[] = [];
+    for (let i = 0; i <= N; i++) {
+      const u = i / N;
+      const dy = wave(i);
+      const droop = u * u * 2.5;
+      top.push({ x: foot.x + u * len, y: topY + 1 + dy + droop });
+      bot.push({ x: foot.x + u * len * 0.97, y: topY + 1 + hgt + dy + droop * 1.3 });
+    }
+    const light = TEAM_LIGHT[team];
+    const dark = TEAM_DARK[team];
+    for (let i = 0; i < N; i++) {
+      // Sombra pela inclinação da onda: dobras alternam claro e escuro.
+      const slope = wave(i + 1) - wave(i);
+      const c = slope > 0.15 ? dark : slope < -0.15 ? light : TEAM_COLOR[team];
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.moveTo(top[i].x, top[i].y);
+      ctx.lineTo(top[i + 1].x + 0.4, top[i + 1].y);
+      ctx.lineTo(bot[i + 1].x + 0.4, bot[i + 1].y);
+      ctx.lineTo(bot[i].x, bot[i].y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // Emblema: engrenagem simples no meio do pano.
+    const mid = Math.round(N * 0.45);
+    const cx = (top[mid].x + bot[mid].x) / 2;
+    const cy = (top[mid].y + bot[mid].y) / 2;
+    ctx.fillStyle = 'rgba(245, 235, 210, 0.9)';
+    ctx.beginPath();
+    for (let k = 0; k < 16; k++) {
+      const r = k % 2 === 0 ? 3.6 : 2.6;
+      const a = (k / 16) * Math.PI * 2;
+      if (k === 0) ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      else ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = TEAM_COLOR[team];
+    ctx.beginPath();
+    ctx.arc(cx, cy, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+    // Contorno fino.
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(top[0].x, top[0].y);
+    for (const p of top) ctx.lineTo(p.x, p.y);
+    for (let i = N; i >= 0; i--) ctx.lineTo(bot[i].x, bot[i].y);
+    ctx.stroke();
   }
 
   private drawBarricade(x: number, y: number, team: Team, hp: number): void {
@@ -1233,3 +1321,87 @@ function hexA(hex: string, a: number): string {
 }
 
 const fmt = (m: number): string => (Math.round(m * 100) / 100).toString().replace('.', ',');
+
+// ---------- Cores do chão ----------
+
+const GRASS = { h: 98, s: 30, l: 34 };
+const FOREST_GRASS = { h: 128, s: 34, l: 21 };
+const EARTH = { h: 34, s: 32, l: 33 };
+
+function buildGroundColors(s: GameState): string[][] {
+  const W = s.width;
+  const H = s.height;
+  const cellsOf = (pred: (t: Terrain) => boolean) => {
+    const out: Pos[] = [];
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (pred(s.terrain[y][x])) out.push({ x, y });
+    return out;
+  };
+  const forests = cellsOf((t) => t === 'floresta');
+  const hills = cellsOf((t) => t === 'colina' || t === 'lama');
+  const water = cellsOf((t) => t === 'agua');
+  const dist = (x: number, y: number, list: Pos[]) => list.reduce((m, c) => Math.min(m, Math.hypot(c.x - x, c.y - y)), Infinity);
+  const out: string[][] = [];
+  for (let y = 0; y < H; y++) {
+    const row: string[] = [];
+    for (let x = 0; x < W; x++) {
+      const t = s.terrain[y][x];
+      const n = valueNoise(x / 3.5, y / 3.5) - 0.5; // manchas grandes
+      const j = hash2(x, y) - 0.5; // variação de cada casa
+      let c: { h: number; s: number; l: number };
+      if (t === 'agua') c = { h: 210, s: 38, l: 22 + n * 3 };
+      else if (t === 'ponte') c = { h: 28, s: 22, l: 31 };
+      else if (t === 'colina') c = { h: 33 + j * 4, s: 30, l: 37 + n * 4 + j * 2 };
+      else if (t === 'lama') c = { h: 30, s: 30, l: 27 + j * 2 };
+      else if (t === 'floresta') c = { h: 130 + j * 6, s: 32, l: 19 + n * 3 + j * 2 };
+      else if (t === 'fonte') c = { h: 230, s: 10, l: 40 };
+      else {
+        // Campo: verde que escurece perto da mata e vira terra perto das colinas.
+        const f = Math.max(0, 1 - (dist(x, y, forests) - 1) / 2.5);
+        const e = Math.max(0, 1 - (dist(x, y, hills) - 1) / 2.2);
+        const w = Math.max(0, 1 - (dist(x, y, water) - 1) / 1.5);
+        c = { h: GRASS.h + n * 14 + j * 5, s: GRASS.s + n * 6, l: GRASS.l + n * 5 + j * 2.5 };
+        c = mixHsl(c, FOREST_GRASS, f * 0.75);
+        c = mixHsl(c, EARTH, e * 0.7);
+        // Beira do rio um pouco mais viçosa.
+        c = { ...c, s: c.s + w * 6, l: c.l + w * 2 };
+        if (t === 'ruina') c = mixHsl(c, { h: 60, s: 6, l: 33 }, 0.5);
+      }
+      row.push(hslHex(c.h, c.s, c.l));
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+function mixHsl(a: { h: number; s: number; l: number }, b: { h: number; s: number; l: number }, k: number) {
+  return { h: a.h + (b.h - a.h) * k, s: a.s + (b.s - a.s) * k, l: a.l + (b.l - a.l) * k };
+}
+
+function hash2(x: number, y: number): number {
+  return frac(Math.sin(x * 157.31 + y * 271.97) * 43758.5453);
+}
+
+/** Ruído suave (valor interpolado entre pontos de uma grade). */
+function valueNoise(x: number, y: number): number {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const sx = x - x0;
+  const sy = y - y0;
+  const s = (t: number) => t * t * (3 - 2 * t);
+  const a = hash2(x0 + 50, y0 + 50);
+  const b = hash2(x0 + 51, y0 + 50);
+  const c = hash2(x0 + 50, y0 + 51);
+  const d = hash2(x0 + 51, y0 + 51);
+  const top = a + (b - a) * s(sx);
+  const bottom = c + (d - c) * s(sx);
+  return top + (bottom - top) * s(sy);
+}
+
+function hslHex(h: number, s: number, l: number): string {
+  s /= 100;
+  l /= 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
+  return `#${((1 << 24) | (f(0) << 16) | (f(8) << 8) | f(4)).toString(16).slice(1)}`;
+}
