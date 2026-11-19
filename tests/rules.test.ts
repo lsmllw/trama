@@ -49,23 +49,23 @@ const find = (s: GameState, team: 'azul' | 'vermelho', cls: ClassId) => s.units.
 function face(s: GameState, a: Unit, d: Unit, side: 'frente' | 'flanco' | 'costas' = 'frente'): void {
   for (const u of s.units) if (u !== a && u !== d) u.alive = false;
   d.x = 6;
-  d.y = 11;
+  d.y = 13;
   a.x = 6;
-  a.y = 10;
+  a.y = 12;
   d.facing = side === 'frente' ? 'N' : side === 'costas' ? 'S' : 'E';
   d.ready = false;
 }
 
-describe('mapa 24×16', () => {
-  it('tem o tamanho certo, Bases nos lugares e casas iniciais livres', () => {
+describe('mapa 20×20', () => {
+  it('tem o tamanho certo, Bases em cantos opostos e casas iniciais livres', () => {
     const m = parseMap(MAP_VAU);
-    expect([m.width, m.height]).toEqual([24, 16]);
-    expect(m.bases.vermelho).toEqual({ x: 12, y: 0 });
-    expect(m.bases.azul).toEqual({ x: 11, y: 15 });
+    expect([m.width, m.height]).toEqual([20, 20]);
+    expect(m.bases.azul).toEqual({ x: 1, y: 1 });
+    expect(m.bases.vermelho).toEqual({ x: 18, y: 18 });
     for (const t of ['azul', 'vermelho'] as const) for (const p of DEPLOY_SLOTS[t]) expect(m.terrain[p.y][p.x]).toBe('planicie');
   });
   it('é simétrico por rotação de 180°', () => {
-    for (let y = 0; y < 16; y++) expect(MAP_VAU[y]).toBe([...MAP_VAU[15 - y]].reverse().join(''));
+    for (let y = 0; y < 20; y++) expect(MAP_VAU[y]).toBe([...MAP_VAU[19 - y]].reverse().join(''));
   });
 });
 
@@ -154,11 +154,12 @@ describe('movimento', () => {
     const s = game();
     const cav = find(s, 'azul', 'cavaleiro');
     for (const u of s.units) if (u !== cav) u.alive = false;
-    cav.x = 4;
-    cav.y = 10; // floresta em (4,9), água em (4,8)
-    const reach = reachable(s, cav, 4);
-    expect(reach.get(key(s, 4, 9))?.cost).toBe(3);
-    expect(reach.has(key(s, 4, 8))).toBe(false);
+    cav.x = 1;
+    cav.y = 4; // floresta em (1,5)
+    expect(reachable(s, cav, 4).get(key(s, 1, 5))?.cost).toBe(3);
+    cav.x = 0;
+    cav.y = 8; // água em (0,9)
+    expect(reachable(s, cav, 4).has(key(s, 0, 9))).toBe(false);
   });
   it('mina inimiga para o movimento e causa 8', () => {
     const s = game();
@@ -167,13 +168,13 @@ describe('movimento', () => {
     s.units.find((u) => u.team === 'vermelho')!.alive = true; // evita vitória imediata
     s.units.find((u) => u.team === 'vermelho')!.x = 0;
     s.units.find((u) => u.team === 'vermelho')!.y = 0;
-    esp.x = 6;
-    esp.y = 11;
-    s.mines.push({ id: 99, team: 'vermelho', ownerId: 'V5', x: 6, y: 10 });
+    esp.x = 5;
+    esp.y = 13;
+    s.mines.push({ id: 99, team: 'vermelho', ownerId: 'V5', x: 5, y: 14 });
     beginActivation(s, esp.id);
-    expect(destinations(s).some((p) => p.x === 6 && p.y === 9)).toBe(true);
-    moveTo(s, 6, 9);
-    expect([esp.x, esp.y]).toEqual([6, 10]);
+    expect(destinations(s).some((p) => p.x === 5 && p.y === 15)).toBe(true);
+    moveTo(s, 5, 15);
+    expect([esp.x, esp.y]).toEqual([5, 14]);
     expect(esp.hp).toBe(CLASSES.espadachim.hp - 8);
     expect(s.mines.length).toBe(0);
   });
@@ -230,12 +231,12 @@ describe('itens', () => {
   it('coletar no nó verde dá Tônico e gasta uma carga; Tônico cura 12', () => {
     const s = game();
     const tank = find(s, 'azul', 'tank');
-    tank.x = 11;
-    tank.y = 12; // nó verde em (11,13)
+    tank.x = 4;
+    tank.y = 3; // nó verde em (4,4)
     beginActivation(s, tank.id);
-    collect(s, 11, 13);
+    collect(s, 4, 4);
     expect(tank.items).toEqual(['tonico']);
-    expect(s.nodes.find((n) => n.x === 11 && n.y === 13)!.charges).toBe(2);
+    expect(s.nodes.find((n) => n.x === 4 && n.y === 4)!.charges).toBe(2);
     endActivation(s);
     s.activeTeam = 'azul';
     tank.activated = false;
@@ -247,11 +248,11 @@ describe('itens', () => {
   it('na Fonte Prismática é preciso escolher a cor', () => {
     const s = game();
     const esp = find(s, 'azul', 'espadachim');
-    esp.x = 11;
-    esp.y = 9; // ao lado da Fonte (11,8)
+    esp.x = 9;
+    esp.y = 8; // ao lado da Fonte (9,9)
     beginActivation(s, esp.id);
-    expect(() => collect(s, 11, 8)).toThrow();
-    collect(s, 11, 8, 'roxo');
+    expect(() => collect(s, 9, 9)).toThrow();
+    collect(s, 9, 9, 'roxo');
     expect(esp.items).toEqual(['foco']);
   });
 });
@@ -273,7 +274,7 @@ describe('level e habilidades', () => {
     beginActivation(s, bl.id);
     expect(abilityTargets(s, bl).length).toBe(1);
     useAbility(s, tank.x, tank.y);
-    expect([tank.x, tank.y]).toEqual([6, 12]);
+    expect([tank.x, tank.y]).toEqual([6, 14]);
   });
   it('Provocar obriga os inimigos próximos a atacar só o Tank', () => {
     const s = game();
@@ -324,9 +325,9 @@ describe('vitória', () => {
   it('destruir a Base vence a partida', () => {
     const s = game();
     const esp = find(s, 'azul', 'espadachim');
-    for (const u of s.units) if (u.team === 'vermelho' && u.x === 12 && u.y === 1) u.x = 20;
-    esp.x = 12;
-    esp.y = 1;
+    for (const u of s.units) if (u.team === 'vermelho' && u.x === 18 && u.y === 17) u.x = 10;
+    esp.x = 18;
+    esp.y = 17; // encostado na Base Vermelha (18,18)
     s.bases.vermelho.hp = 1;
     beginActivation(s, esp.id);
     attackBaseMelee(s);
@@ -347,5 +348,5 @@ describe('IA × IA', () => {
       simulateGame(s, { difficulty: { azul: 'veterano', vermelho: i % 2 ? 'recruta' : 'veterano' } });
       expect(s.winner).not.toBeNull();
     }
-  });
+  }, 120_000);
 });

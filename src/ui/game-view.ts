@@ -104,6 +104,11 @@ export class GameView {
     return this.busy;
   }
 
+  /** Centro de uma casa na página (testes automatizados). */
+  cellPoint(x: number, y: number): { x: number; y: number } {
+    return this.renderer.clientPoint(x, y, this.s);
+  }
+
   mount(): void {
     clear(this.root);
     this.root.append(

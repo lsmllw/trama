@@ -114,7 +114,7 @@ export function createGame(opts: NewGameOptions): GameState {
         y: slot.y,
         hp: def.hp,
         stamina: def.stamina,
-        facing: team === 'azul' ? 'N' : 'S',
+        facing: team === 'azul' ? 'S' : 'N',
         activated: false,
         ready: false,
         alive: true,

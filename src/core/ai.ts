@@ -102,7 +102,17 @@ export const AI_WEIGHTS = {
   advance: 0.8,
   /** Penalidade por terminar numa casa onde pode morrer. */
   deathRisk: 8,
+  /** A partir desta rodada a cautela cai, até sobrar `minCaution` no fim da partida. */
+  boldFrom: 3,
+  minCaution: 0.1,
 };
+
+/** Fator de cautela: 1 no começo, caindo até `minCaution` perto da última rodada. */
+function caution(s: GameState): number {
+  const span = Math.max(1, s.maxRounds - AI_WEIGHTS.boldFrom);
+  const t = Math.min(1, Math.max(0, (s.round - AI_WEIGHTS.boldFrom) / span));
+  return 1 - t * (1 - AI_WEIGHTS.minCaution);
+}
 
 const unitValue = (u: Unit) => CLASSES[u.cls].atq + u.maxHp / 4;
 
@@ -332,7 +342,8 @@ function positionScore(s: GameState, u: Unit, c: Pos, threat: ThreatMap): number
     const ideal = def.ranged.kind === 'morteiro' ? 5 : def.ranged.kind === 'canhao' ? 6 : def.ranged.max - 1;
     score -= Math.abs(Math.min(dEnemy, dBase) - ideal) * 0.6;
   } else {
-    score -= Math.min(dEnemy, dBase * 0.85) * AI_WEIGHTS.advance;
+    // Quanto menos cautela, mais vontade de avançar.
+    score -= Math.min(dEnemy, dBase * 0.85) * AI_WEIGHTS.advance * (2 - caution(s));
   }
   if (AI_WEIGHTS.cohesion) {
     const allies = aliveUnits(s, u.team).filter((a) => a.id !== u.id);
@@ -349,9 +360,10 @@ function positionScore(s: GameState, u: Unit, c: Pos, threat: ThreatMap): number
   const armor = CLASSES[u.cls].armadura + TERRAIN[terrainAt(s, c.x, c.y)].armorBonus;
   const fragility = 1 + (1 - u.hp / u.maxHp);
   const danger = threatAt(s, threat, c, armor);
-  score -= danger * AI_WEIGHTS.threat * fragility;
+  const careful = caution(s);
+  score -= danger * AI_WEIGHTS.threat * fragility * careful;
   // Risco de morrer na próxima fase pesa muito mais.
-  if (danger >= u.hp) score -= AI_WEIGHTS.deathRisk;
+  if (danger >= u.hp) score -= AI_WEIGHTS.deathRisk * careful;
   score -= strikeDanger(s, c, armor) * 1.2;
   if (TERRAIN[terrainAt(s, c.x, c.y)].cover) score += 0.8;
   if (terrainAt(s, c.x, c.y) === 'colina' && def.ranged) score += 0.6;

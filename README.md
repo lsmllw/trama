@@ -1,8 +1,8 @@
 # Trama: protótipo jogável
 
-Protótipo cinza, jogável no navegador, de um jogo de ação tática em fantasia steampunk inspirado em FF Tactics e Fire Emblem. Uma partida é Azul (você) contra Vermelho (máquina), com 5 unidades de cada lado, no mapa "Vau do Prisma" (24×16).
+Protótipo jogável no navegador de um jogo de ação tática em fantasia steampunk inspirado em FF Tactics e Fire Emblem. Uma partida é Azul (você) contra Vermelho (máquina), com 5 unidades de cada lado, no mapa "Vau do Prisma" (20×20), em vista 2.5D: o tabuleiro aparece girado, com a sua Base perto da ponta esquerda e a inimiga na ponta oposta, e um rio atravessando o meio.
 
-O objetivo é responder uma pergunta: **o Confronto é divertido com quadrados cinza?** Por isso ainda não há arte final nem construções.
+O objetivo é responder uma pergunta: **o Confronto é divertido?** Por isso ainda não há arte final (as unidades são peças coloridas em pé) nem construções.
 
 ## Rodar
 
@@ -57,44 +57,45 @@ npm run tune                   # compara variações de números (edite scripts/
 ```
 src/core/      regras puras, sem tela (determinísticas, com semente)
   data.ts        classes, pesos, terrenos, constantes de balanceamento
-  map.ts         mapa "Vau do Prisma" em texto
+  map.ts         mapa "Vau do Prisma" em texto (gerado por tools/genmap.py)
   grid.ts        movimento (Dijkstra), linha de visão, flanco
   combat.ts      dano, área, vitória
   confronto.ts   o Confronto: lances, matriz, Exposição, Leitura
   game.ts        criação da partida, fases, ações, coleta, itens, fim de rodada
   abilities.ts   as 12 habilidades de classe
   ai.ts          IA de utilidade (inclui itens e habilidades) + IA de lances + simulação
-src/ui/        canvas, painéis, janela do Confronto, seleção de time
+src/ui/        canvas 2.5D (renderer.ts), painéis, janela do Confronto, seleção de time
+tools/         genmap.py: gera e confere o mapa (simetria, caminhos, casas iniciais)
 tests/         testes das regras (Vitest)
 scripts/       simulação IA × IA
 ```
 
 O núcleo não conhece a tela: a mesma lógica roda no navegador, nos testes e na simulação.
 
-## Balanceamento (`npm run balance`, IA Veterano × Veterano)
+## Balanceamento (`npm run balance`, IA Veterano × Veterano, mapa 20×20)
 
 Taxa de vitória dos times que tinham cada classe (1500 partidas com times sorteados). A faixa saudável é 45% a 55%.
 
-| Classe | Antes | Agora |
+| Classe | No início | Agora |
 | --- | --- | --- |
-| Blindado | 66,8% | 49,5% |
-| Cavaleiro | 60,0% | 57,7% |
-| Atirador | 55,4% | 59,1% |
-| Canhão | 48,2% | 58,7% |
-| Bombardeiro | 46,9% | 52,4% |
-| Morteiro | 39,8% | 52,2% |
-| Espião | 41,9% | 48,1% |
-| Tank | 56,5% | 44,5% |
-| Construtor | 49,3% | 43,1% |
+| Blindado | 66,8% | ~56% |
+| Cavaleiro | 60,0% | ~56% |
+| Atirador | 55,4% | ~56% |
+| Bombardeiro | 46,9% | ~54% |
+| Morteiro | 39,8% | ~46% |
+| Espião | 41,9% | ~47% |
+| Canhão | 48,2% | ~41% |
 
-Arquétipos (8 times fixos se enfrentando, 30 partidas por par): o time com dois Blindados caiu de **91% para 47%** de vitórias, e o Antiblindado (dois Bombardeiros) vence os Blindados em 55% dos confrontos diretos. Ainda fora da faixa: Artilharia (76%), Infiltração (33%) e Engenharia (28%).
+Arquétipos (8 times fixos, cada par jogando dos dois lados): o time com dois Blindados caiu de **91% para cerca de 65%**, e o Antiblindado (dois Bombardeiros) vence os Blindados em cerca de 60% dos confrontos diretos. O mais fraco é a Artilharia (~36%): o mapa novo tem muita floresta, que dá cobertura contra tiros.
 
 O que mudou para chegar aqui:
 
 - **Flanco e costas dão Leitura em vez de lances.** Era a causa principal: o Blindado atacava pelo flanco ou pelas costas em 98% dos Confrontos e ganhava até 3 lances com força ×1,6.
-- **IA com mapa de perigo:** ela sabe quais casas o inimigo alcança na fase seguinte e evita terminar onde pode morrer. Antes, as unidades rápidas chegavam uma a uma e eram destruídas, o que favorecia times lentos.
-- Blindado com MOV 3 e só terreno liso; minas e granada antitanque do Bombardeiro.
-- Números: Atirador ATQ 5, Cavaleiro ATQ 7, Canhão ATQ 9, Mecânico ATQ 6, Construtor ATQ 7, Espião ATQ 8 e HP 20; Reparo do Mecânico vale para qualquer aliado.
+- **IA com mapa de perigo:** ela sabe quais casas o inimigo alcança na fase seguinte e evita terminar onde pode morrer. Essa cautela diminui com as rodadas, para a partida não travar.
+- Blindado com MOV 3 e só terreno liso; minas e granada antitanque do Bombardeiro. No mapa novo, o Blindado só cruza o rio pela Fonte, o melhor lugar para minas.
+- Números: Atirador ATQ 5, Cavaleiro ATQ 7, Canhão ATQ 9, Morteiro ATQ 8 e área ×2,2, Mecânico ATQ 6, Construtor ATQ 7, Espião ATQ 8 e HP 20; Reparo do Mecânico vale para qualquer aliado.
+
+As partidas duram cerca de 16 rodadas; ~78% terminam por eliminação ou Base destruída, o resto por pontos na rodada 20.
 
 ## O que ainda falta
 

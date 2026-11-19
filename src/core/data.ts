@@ -33,8 +33,8 @@ export const CLASSES: Record<ClassId, ClassDef> = {
   },
   morteiro: {
     id: 'morteiro', name: 'Morteiro', abbr: 'Mo', arm: 'artilharia', weight: 'leve',
-    mov: 4, hp: 18, atq: 7, armadura: 2, stamina: 8, melee: false, moveAfterAction: false,
-    ranged: { kind: 'morteiro', min: 3, max: 6, mult: 2.0 },
+    mov: 4, hp: 18, atq: 8, armadura: 2, stamina: 8, melee: false, moveAfterAction: false,
+    ranged: { kind: 'morteiro', min: 3, max: 6, mult: 2.2 },
     role: 'Área telegrafada',
   },
   canhao: {

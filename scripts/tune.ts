@@ -81,8 +81,9 @@ const C = CLASSES;
 // Edite a lista para testar ideias; a primeira linha é a referência.
 const tweaks: Tweak[] = [
   { name: 'atual', apply: () => {} },
-  { name: 'R1: Canhão ATQ 8, Morteiro ATQ 6', apply: () => { C.canhao.atq = 8; C.morteiro.atq = 6; } },
-  { name: 'R2: R1 + Tank HP 36, Construtor HP 32', apply: () => { C.canhao.atq = 8; C.morteiro.atq = 6; C.tank.hp = 36; C.construtor.hp = 32; } },
+  { name: 'exemplo: Canhão ATQ 10', apply: () => { C.canhao.atq = 10; } },
+  { name: 'exemplo: lados dão lances (regra antiga)', apply: () => { SIDE_BONUS.mode = 'lances'; } },
+  { name: 'exemplo: IA sem medo de morrer', apply: () => { AI_WEIGHTS.deathRisk = 0; } },
 ];
 const only = process.argv[2];
 for (const t of tweaks) {

@@ -1,21 +1,30 @@
 import type { ColorNode, NodeColor, Pos, Team, Terrain } from './types';
 
-// Mapa "Vau do Prisma", 24×16, com simetria rotacional de 180°.
-// Só a metade de cima (Vermelho) é escrita; a de baixo (Azul) é gerada girando.
-const TOP_HALF: readonly string[] = [
-  '....FF......B.....C.....',
-  '...FF...#.........CCC...',
-  '............V...........',
-  '..L...C........FF....R..',
-  '........#..MM...#.......',
-  '.FF.................C...',
-  '..........C.......FF....',
-  '~~~=~~~~~~~PP~~~~~~~=~~~',
+// Mapa "Vau do Prisma", 20×20, com simetria rotacional de 180°.
+// Base Azul num canto, Vermelha no canto oposto; rio atravessando o meio (fileiras 9 e 10)
+// com duas pontes e a Fonte Prismática no centro. Gerado por tools/genmap.py.
+export const MAP_VAU: readonly string[] = [
+  '....................',
+  '.B....FF....#.......',
+  '......F..CC...FF....',
+  '...C.......#...L..F.',
+  '....VFF.#...........',
+  '.FF......C.FF...C...',
+  '.....C......F....FF.',
+  '.CR....FF.MM..CC....',
+  '.#MMFF..M..M.F.MM#.C',
+  '~~~=~~~~~PP~~~~~=~~~',
+  '~~~=~~~~~PP~~~~~=~~~',
+  'C.#MM.F.M..M..FFMM#.',
+  '....CC..MM.FF....RC.',
+  '.FF....F......C.....',
+  '...C...FF.C......FF.',
+  '...........#.FFV....',
+  '.F..L...#.......C...',
+  '....FF...CC..F......',
+  '.......#....FF....B.',
+  '....................',
 ];
-
-const rotate = (row: string) => [...row].reverse().join('');
-
-export const MAP_VAU: readonly string[] = [...TOP_HALF, ...[...TOP_HALF].reverse().map(rotate)];
 
 const CHAR_TO_TERRAIN: Record<string, Terrain> = {
   '.': 'planicie',
@@ -67,22 +76,22 @@ export function parseMap(rows: readonly string[]): ParsedMap {
     terrain.push(line);
   });
   if (basePositions.length !== 2) throw new Error('O mapa precisa de exatamente 2 bases');
-  // A base de cima é do Vermelho.
-  basePositions.sort((a, b) => a.y - b.y);
-  return { width, height, terrain, bases: { vermelho: basePositions[0], azul: basePositions[1] }, nodes };
+  // A Base mais perto do canto superior esquerdo é do Azul.
+  basePositions.sort((a, b) => a.x + a.y - (b.x + b.y));
+  return { width, height, terrain, bases: { azul: basePositions[0], vermelho: basePositions[1] }, nodes };
 }
 
 const BLUE_SLOTS: Pos[] = [
-  { x: 11, y: 14 },
-  { x: 9, y: 14 },
-  { x: 13, y: 14 },
-  { x: 7, y: 13 },
-  { x: 15, y: 13 },
+  { x: 3, y: 1 },
+  { x: 1, y: 3 },
+  { x: 3, y: 2 },
+  { x: 4, y: 2 },
+  { x: 2, y: 4 },
 ];
 
 /** Casas iniciais de cada time, na ordem em que as unidades escolhidas são colocadas. */
 export const DEPLOY_SLOTS: Record<Team, Pos[]> = {
   azul: BLUE_SLOTS,
   // Espelho rotacional das casas azuis.
-  vermelho: BLUE_SLOTS.map((p) => ({ x: 23 - p.x, y: 15 - p.y })),
+  vermelho: BLUE_SLOTS.map((p) => ({ x: 19 - p.x, y: 19 - p.y })),
 };
