@@ -107,10 +107,9 @@ export class Renderer {
   /** Onde o cursor está no canvas (0–1), ou null fora dele; e a versão suavizada que a câmera segue. */
   private pointerFrac: Pt | null = null;
   private follow: Pt = { x: 0.5, y: 0.5 };
-  /** Depois de voar até uma unidade, a câmera só volta a seguir quando o mouse mexer no tabuleiro. */
-  private followPaused = false;
   private lastNow = 0;
-  private camAnim: { from: { z: number; tx: number; ty: number }; to: { z: number; tx: number; ty: number }; t0: number; ms: number } | null = null;
+  /** Unidade em que a câmera está presa (centralizada), ou null para seguir o mouse. */
+  private lockId: string | null = null;
 
   constructor(
     readonly canvas: HTMLCanvasElement,
@@ -197,7 +196,7 @@ export class Renderer {
     const ctx = this.ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    this.stepCamera(now);
+    this.stepCamera(s, now);
     this.drawBackground(now);
     ctx.setTransform(this.cam.z, 0, 0, this.cam.z, this.cam.tx, this.cam.ty);
     this.drawBoardShadow(s);
@@ -233,14 +232,6 @@ export class Renderer {
     return this.cam.z;
   }
 
-  /** Mantém o tabuleiro cobrindo a tela (sem mostrar vazio fora dele). */
-  private clamp(c: { z: number; tx: number; ty: number }) {
-    const W = this.canvas.width;
-    const H = this.canvas.height;
-    const z = Math.min(MAX_ZOOM, Math.max(1, c.z));
-    return { z, tx: Math.min(0, Math.max(W - W * z, c.tx)), ty: Math.min(0, Math.max(H - H * z, c.ty)) };
-  }
-
   /** Converte coordenadas da página em pixels do canvas (sem a câmera). */
   toCanvas(clientX: number, clientY: number): Pt {
     const r = this.canvas.getBoundingClientRect();
@@ -258,67 +249,65 @@ export class Renderer {
     const fx = (p.x / this.canvas.width - 0.08) / 0.84;
     const fy = (p.y / this.canvas.height - 0.08) / 0.84;
     this.pointerFrac = { x: Math.min(1, Math.max(0, fx)), y: Math.min(1, Math.max(0, fy)) };
-    this.followPaused = false;
   }
 
-  /** Zoom pela roda do mouse; a câmera passa a seguir o cursor. */
+  /** Zoom pela roda do mouse. Presa numa unidade, continua centralizada nela. */
   zoomAt(clientX: number, clientY: number, factor: number): void {
-    this.camAnim = null;
-    this.pointer(clientX, clientY);
+    if (!this.lockId) this.pointer(clientX, clientY);
     this.zTarget = Math.min(MAX_ZOOM, Math.max(1, this.zTarget * factor));
   }
 
-  /** Voa até a casa, se houver zoom. */
-  focus(x: number, y: number, s: GameState, ms = 320): void {
-    if (this.zTarget <= 1.02) return;
-    const z = this.zTarget;
-    const p = this.P(x + 0.5, y + 0.5, this.elev(s, x, y) + 15);
-    const to = this.clamp({ z, tx: this.canvas.width / 2 - p.x * z, ty: this.canvas.height / 2 - p.y * z });
-    this.camAnim = { from: { ...this.cam }, to, t0: performance.now(), ms };
-    this.followPaused = true;
+  /** Prende a câmera numa unidade (centraliza e acompanha), ou solta (null) para seguir o mouse. */
+  lockOn(unitId: string | null): void {
+    if (this.lockId && !unitId) {
+      // Ao soltar, a câmera parte de onde está, sem pulo.
+      const W = this.canvas.width;
+      const H = this.canvas.height;
+      const z = this.cam.z;
+      const fx = W - W * z ? this.cam.tx / (W - W * z) : 0.5;
+      const fy = H - H * z ? this.cam.ty / (H - H * z) : 0.5;
+      this.follow = { x: Math.min(1, Math.max(0, fx)), y: Math.min(1, Math.max(0, fy)) };
+    }
+    this.lockId = unitId;
+  }
+
+  get lockedOn(): string | null {
+    return this.lockId;
   }
 
   resetCamera(): void {
-    this.camAnim = null;
     this.zTarget = 1;
   }
 
-  private stepCamera(now: number): void {
+  private stepCamera(s: GameState, now: number): void {
     const dt = this.lastNow ? Math.min(64, now - this.lastNow) : 16;
     this.lastNow = now;
     const W = this.canvas.width;
     const H = this.canvas.height;
-    const a = this.camAnim;
-    if (a) {
-      const t = Math.min(1, (now - a.t0) / a.ms);
-      const e = 1 - Math.pow(1 - t, 3);
-      this.cam = {
-        z: a.from.z + (a.to.z - a.from.z) * e,
-        tx: a.from.tx + (a.to.tx - a.from.tx) * e,
-        ty: a.from.ty + (a.to.ty - a.from.ty) * e,
-      };
-      if (t >= 1) {
-        this.camAnim = null;
-        // Continua daqui quando voltar a seguir o cursor, sem pulo.
-        const z = this.cam.z;
-        this.follow = { x: W - W * z ? this.cam.tx / (W - W * z) : 0.5, y: H - H * z ? this.cam.ty / (H - H * z) : 0.5 };
+    const zNext = this.cam.z + (this.zTarget - this.cam.z) * (1 - Math.exp(-dt / 90));
+    const locked = this.lockId ? s.units.find((u) => u.id === this.lockId && u.alive) : undefined;
+    let want: { tx: number; ty: number };
+    if (locked) {
+      // Centraliza na unidade (mesmo na borda do mapa) e acompanha enquanto ela anda.
+      const p = this.drawPos(locked, now);
+      const w = this.P(p.x + 0.5, p.y + 0.5, this.elev(s, Math.round(p.x), Math.round(p.y)) + 14);
+      want = { tx: W / 2 - w.x * zNext, ty: H / 2 - w.y * zNext };
+    } else {
+      const k = 1 - Math.exp(-dt / 140);
+      if (this.pointerFrac) {
+        this.follow.x += (this.pointerFrac.x - this.follow.x) * k;
+        this.follow.y += (this.pointerFrac.y - this.follow.y) * k;
       }
-      return;
+      // Com zoom, a câmera mostra a parte do tabuleiro para onde o cursor aponta.
+      // Sem zoom, sobra só um leve deslocamento (parallax) do tabuleiro sobre o fundo.
+      const fade = Math.min(1, Math.max(0, (1.4 - zNext) / 0.4));
+      want = {
+        tx: (W - W * zNext) * this.follow.x + fade * (0.5 - this.follow.x) * PARALLAX_BOARD.x,
+        ty: (H - H * zNext) * this.follow.y + fade * (0.5 - this.follow.y) * PARALLAX_BOARD.y,
+      };
     }
-    const k = 1 - Math.exp(-dt / 140);
-    if (this.pointerFrac && !this.followPaused) {
-      this.follow.x += (this.pointerFrac.x - this.follow.x) * k;
-      this.follow.y += (this.pointerFrac.y - this.follow.y) * k;
-    }
-    const z = this.cam.z + (this.zTarget - this.cam.z) * (1 - Math.exp(-dt / 90));
-    // Com zoom, a câmera mostra a parte do tabuleiro para onde o cursor aponta.
-    // Sem zoom, sobra só um leve deslocamento (parallax) do tabuleiro sobre o fundo.
-    const fade = Math.min(1, Math.max(0, (1.4 - z) / 0.4));
-    this.cam = {
-      z,
-      tx: (W - W * z) * this.follow.x + fade * (0.5 - this.follow.x) * PARALLAX_BOARD.x,
-      ty: (H - H * z) * this.follow.y + fade * (0.5 - this.follow.y) * PARALLAX_BOARD.y,
-    };
+    const m = 1 - Math.exp(-dt / (locked ? 110 : 60));
+    this.cam = { z: zNext, tx: this.cam.tx + (want.tx - this.cam.tx) * m, ty: this.cam.ty + (want.ty - this.cam.ty) * m };
   }
 
   // ---------- Plano de fundo ----------

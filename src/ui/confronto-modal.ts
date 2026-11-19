@@ -105,7 +105,7 @@ export function openConfronto(ctx: ConfrontoContext): Promise<void> {
     const onKey = (e: KeyboardEvent) => {
       const map: Record<string, Lance> = { '1': 'golpe', '2': 'guarda', '3': 'finta', '4': 'esperar' };
       if (map[e.key]) play(map[e.key]);
-      else if ((e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') && cs.done) close();
+      else if ((e.key === 'Enter' || e.key === ' ' || e.key === 'Escape' || e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'x') && cs.done) close();
       else if (e.key.toLowerCase() === 'l') read();
     };
     document.addEventListener('keydown', onKey);
@@ -149,7 +149,7 @@ export function openConfronto(ctx: ConfrontoContext): Promise<void> {
         h('div', { class: 'tempo-track' }, track),
         h('div', { class: 'notice' }, notice),
         cs.done
-          ? h('div', { class: 'lance-buttons' }, h('button', { class: 'primary', onclick: close }, 'Fechar (Enter)'))
+          ? h('div', { class: 'lance-buttons' }, h('button', { class: 'primary', onclick: close }, 'Fechar (Z)'))
           : h(
               'div',
               { class: 'lance-buttons' },

@@ -187,18 +187,26 @@ export class GameView {
     this.el.tip.remove();
   }
 
-  /** Clique num card da barra: seleciona a unidade, abre o movimento e leva a câmera até ela. */
-  private selectFromCard(id: string): void {
+  /**
+   * Seleciona uma unidade sua (card, tecla 1–5 ou clique no tabuleiro): abre o movimento se ela
+   * ainda pode agir e prende a câmera nela, centralizada, até apertar X.
+   */
+  private selectOwn(id: string): void {
     const s = this.s;
     const u = getUnit(s, id);
-    if (!u.alive) return;
-    this.renderer.focus(u.x, u.y, s);
-    if (this.isPlayerTurn() && !this.busy && u.team === PLAYER && !u.activated && s.activation?.unitId !== id) {
+    if (!u.alive || this.busy) return;
+    if (this.isPlayerTurn() && u.team === PLAYER && !u.activated && s.activation?.unitId !== id) {
       beginActivation(s, id);
       this.mode = 'normal';
     }
     this.selectedId = id;
+    this.renderer.lockOn(id);
     this.afterChange();
+  }
+
+  /** Solta a câmera para voltar a seguir o mouse. */
+  private releaseCamera(): void {
+    this.renderer.lockOn(null);
   }
 
   // ---------- Janela de informações ----------
@@ -287,7 +295,7 @@ export class GameView {
         {
           class: cls,
           disabled: !u.alive,
-          onclick: () => this.selectFromCard(u.id),
+          onclick: () => this.selectOwn(u.id),
           onmouseenter: (e: MouseEvent) => {
             const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
             this.tipFromCard = true;
@@ -298,7 +306,14 @@ export class GameView {
           },
           onmouseleave: () => this.hideTip(),
         },
-        h('div', { class: 'uc-head' }, h('span', { class: 'uc-icon', title: d.name }, classIconSvg(u.cls, 15, '#fff')), h('span', { class: 'uc-name' }, d.name), h('span', { class: 'uc-lv' }, `Lv ${u.level}`)),
+        h(
+          'div',
+          { class: 'uc-head' },
+          h('span', { class: 'uc-key' }, String(mine.indexOf(u) + 1)),
+          h('span', { class: 'uc-icon', title: d.name }, classIconSvg(u.cls, 15, '#fff')),
+          h('span', { class: 'uc-name' }, d.name),
+          h('span', { class: 'uc-lv' }, `Lv ${u.level}`),
+        ),
         h('div', { class: 'uc-bar hp' }, h('div', { style: `width:${(100 * u.hp) / u.maxHp}%` })),
         h('div', { class: 'uc-bar st' }, h('div', { style: `width:${(100 * u.stamina) / d.stamina}%` })),
         h(
@@ -353,6 +368,7 @@ export class GameView {
   private async runAiPhase(): Promise<void> {
     this.busy = true;
     this.mode = 'normal';
+    this.releaseCamera();
     this.quiet();
     const s = this.s;
     const team = s.activeTeam;
@@ -473,10 +489,7 @@ export class GameView {
     }
     // Selecionar outra unidade sua: a atual encerra se já mexeu ou agiu.
     if (clicked && clicked.team === PLAYER && !clicked.activated && clicked.id !== a?.unitId) {
-      beginActivation(s, clicked.id);
-      this.selectedId = clicked.id;
-      this.mode = 'normal';
-      this.afterChange();
+      this.selectOwn(clicked.id);
       return;
     }
     this.selectedId = clicked?.id ?? (a ? a.unitId : null);
@@ -513,6 +526,7 @@ export class GameView {
     this.mode = 'normal';
     endActivation(s);
     this.selectedId = null;
+    this.releaseCamera();
     this.afterChange();
   }
 
@@ -521,19 +535,25 @@ export class GameView {
     this.mode = 'normal';
     endPhase(this.s);
     this.selectedId = null;
+    this.releaseCamera();
     this.afterChange();
   }
 
+  /** X (retorno): sai da mira, desfaz o movimento ou desmarca a unidade; e solta a câmera. */
   private escape(): void {
     if (this.mode !== 'normal') {
       this.mode = 'normal';
     } else if (this.s.activation && this.isPlayerTurn()) {
       const a = this.s.activation;
-      if (a.hasMoved && !a.hasActed) undoMove(this.s);
-      else cancelActivation(this.s);
+      if (a.hasMoved && !a.hasActed && !a.noUndo) undoMove(this.s);
+      else if (!a.hasMoved && !a.hasActed) {
+        cancelActivation(this.s);
+        this.selectedId = null;
+      }
     } else {
       this.selectedId = null;
     }
+    this.releaseCamera();
     this.quiet();
   }
 
@@ -542,11 +562,17 @@ export class GameView {
     if (this.busy) return;
     const k = e.key.toLowerCase();
     const dirs: Record<string, Dir> = { ArrowUp: 'N', ArrowDown: 'S', ArrowLeft: 'W', ArrowRight: 'E' };
-    if (e.key === ' ' || e.key === 'Enter') {
+    if (e.key === ' ' || e.key === 'Enter' || k === 'z') {
+      // Z (ou Espaço/Enter) confirma: encerra a unidade.
       e.preventDefault();
       this.endUnit();
-    } else if (e.key === 'Escape') {
+    } else if (e.key === 'Escape' || k === 'x') {
+      // X (ou Esc) volta.
       this.escape();
+    } else if (/^[1-5]$/.test(e.key)) {
+      const mine = this.s.units.filter((u) => u.team === PLAYER);
+      const u = mine[Number(e.key) - 1];
+      if (u && u.alive) this.selectOwn(u.id);
     } else if (k === 'e' && this.isPlayerTurn()) {
       this.endPlayerPhase();
     } else if (dirs[e.key] && this.s.activation && this.isPlayerTurn()) {
@@ -555,9 +581,6 @@ export class GameView {
       this.quiet();
     } else if (k === 'r' && this.isPlayerTurn() && canRun(this.s)) {
       run(this.s);
-      this.quiet();
-    } else if (k === 'z' && this.isPlayerTurn()) {
-      undoMove(this.s);
       this.quiet();
     } else if (k === 'm' && this.canAim()) {
       this.mode = this.mode === 'mirar' ? 'normal' : 'mirar';
@@ -629,20 +652,20 @@ export class GameView {
     let text = '';
     if (s.winner) text = '';
     else if (!this.isPlayerTurn()) text = 'Fase do Vermelho (IA)…';
-    else if (!s.activation) text = `Sua fase: clique numa unidade azul. Faltam ${activatable(s).length}. E encerra a fase.`;
-    else if (this.mode === 'mirar') text = 'Mirando: clique numa casa laranja. Esc cancela.';
-    else if (this.mode === 'habilidade') text = 'Habilidade: clique numa casa roxa. Esc cancela.';
+    else if (!s.activation) text = `Sua fase: teclas 1–5 ou clique numa unidade azul. Faltam ${activatable(s).length}. E encerra a fase.`;
+    else if (this.mode === 'mirar') text = 'Mirando: clique numa casa laranja. X volta.';
+    else if (this.mode === 'habilidade') text = 'Habilidade: clique numa casa roxa. X volta.';
     else {
       const a = s.activation;
       text = a.hasActed
-        ? 'Ainda pode andar. Espaço encerra a unidade.'
-        : 'Mover (azul) e depois 1 ação: atacar (vermelho), curar (verde), coletar, item ou habilidade. Espaço encerra.';
+        ? 'Ainda pode andar. Z confirma e encerra; X volta.'
+        : 'Mover (azul) e depois 1 ação: atacar (vermelho), curar (verde), coletar, item ou habilidade. Z confirma, X volta.';
     }
     if (this.hover) {
       const t = s.terrain[this.hover.y][this.hover.x];
       text += `   [${this.hover.x + 1},${this.hover.y + 1}] ${TERRAIN[t].label}`;
     }
-    text += '   · Roda: zoom (a câmera segue o mouse) · 0: visão inteira';
+    text += this.renderer?.lockedOn ? '   · Câmera presa (X solta)' : '   · Roda: zoom · 0: visão inteira';
     this.el.hint.textContent = text;
   }
 
@@ -811,7 +834,7 @@ export class GameView {
               this.quiet();
             },
           },
-          'Desfazer (Z)',
+          'Desfazer (X)',
         ),
         this.canAim()
           ? h(
@@ -854,7 +877,7 @@ export class GameView {
       h(
         'div',
         { class: 'actions' },
-        h('button', { class: 'primary', disabled: this.busy, onclick: () => this.endUnit() }, 'Encerrar unidade (Espaço)'),
+        h('button', { class: 'primary', disabled: this.busy, onclick: () => this.endUnit() }, 'Confirmar e encerrar (Z)'),
       ),
       h('div', { class: 'facing' }, 'Virar:', facing('N', '↑'), facing('W', '←'), facing('S', '↓'), facing('E', '→')),
     );
@@ -931,6 +954,7 @@ function helpCard(): HTMLElement {
       {},
       h('li', {}, 'Cada time joga uma fase inteira: você move todas as suas unidades, depois a IA move as dela.'),
       h('li', {}, 'Cada unidade: mover e depois 1 ação (atacar, curar, coletar, usar item ou habilidade).'),
+      h('li', {}, 'Teclas 1–5 selecionam suas unidades. Z confirma, X volta. Selecionada, a câmera fica presa nela; X solta.'),
       h('li', {}, 'Vence quem destruir a Base (QG) inimiga ou eliminar todas as unidades. Na rodada 20, decide por pontos.'),
       h('li', {}, 'Corpo a corpo abre o Confronto: 3 tempos. Leve tem 3 lances, Médio 2, Pesado 1 (mas bate mais forte).'),
       h('li', {}, 'O peso define os lances. Atacar pelo flanco dá 1 Leitura, pelas costas 2 (ver o lance do inimigo antes de escolher). Quem não agiu ganha Prontidão (!): +1 lance ao defender.'),

@@ -438,7 +438,7 @@ canvas#board.panning {
   flex-wrap: wrap;
 }
 .uc {
-  width: 150px;
+  width: 168px;
   text-align: left;
   padding: 7px 9px;
   background: var(--panel);
@@ -718,4 +718,14 @@ canvas#board.panning {
   margin-top: 4px;
   color: var(--muted);
   font-style: italic;
+}
+
+.uc-key {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 15px;
 }
