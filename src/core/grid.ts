@@ -1,5 +1,5 @@
 import { CLASSES, TERRAIN } from './data';
-import type { Base, Dir, GameState, Pos, Terrain, Unit } from './types';
+import type { Barricade, Base, Dir, GameState, Mine, Pos, Terrain, Unit } from './types';
 
 export const DIRS: Record<Dir, Pos> = {
   N: { x: 0, y: -1 },
@@ -30,6 +30,18 @@ export function baseAt(s: GameState, x: number, y: number): Base | undefined {
   return undefined;
 }
 
+export function barricadeAt(s: GameState, x: number, y: number): Barricade | undefined {
+  return s.barricades.find((b) => b.x === x && b.y === y);
+}
+
+export function mineAt(s: GameState, x: number, y: number): Mine | undefined {
+  return s.mines.find((m) => m.x === x && m.y === y);
+}
+
+export function inSmoke(s: GameState, x: number, y: number): boolean {
+  return s.smoke.some((sm) => sm.cells.some((c) => c.x === x && c.y === y));
+}
+
 export function getUnit(s: GameState, id: string): Unit {
   const u = s.units.find((v) => v.id === id);
   if (!u) throw new Error(`Unidade inexistente: ${id}`);
@@ -48,9 +60,17 @@ export function neighbors(s: GameState, p: Pos): Pos[] {
 
 /** Custo para a unidade entrar na casa (Infinity = intransitável). */
 export function moveCost(s: GameState, unit: Unit, x: number, y: number): number {
+  if (barricadeAt(s, x, y)) return Infinity;
   const def = TERRAIN[terrainAt(s, x, y)];
   if (CLASSES[unit.cls].arm === 'cavalaria' && def.cavalryCost !== undefined) return def.cavalryCost;
   return def.cost;
+}
+
+/** Casa vazia onde se pode pisar (sem unidade, Base, barricada, água). */
+export function isOpen(s: GameState, x: number, y: number): boolean {
+  if (!inBounds(s, x, y)) return false;
+  if (!Number.isFinite(TERRAIN[terrainAt(s, x, y)].cost)) return false;
+  return !unitAt(s, x, y) && !barricadeAt(s, x, y) && !baseAt(s, x, y);
 }
 
 export interface ReachNode {
@@ -67,11 +87,11 @@ export function reachable(s: GameState, unit: Unit, mp: number, from: Pos = unit
   const dist = new Map<number, ReachNode>();
   const startKey = key(s, from.x, from.y);
   dist.set(startKey, { cost: 0, prev: null });
-  // Fila simples: o grid é pequeno (192 casas).
   const open: number[] = [startKey];
   while (open.length) {
-    open.sort((a, b) => dist.get(a)!.cost - dist.get(b)!.cost);
-    const cur = open.shift()!;
+    let bi = 0;
+    for (let i = 1; i < open.length; i++) if (dist.get(open[i])!.cost < dist.get(open[bi])!.cost) bi = i;
+    const cur = open.splice(bi, 1)[0];
     const curNode = dist.get(cur)!;
     const p = fromKey(s, cur);
     for (const n of neighbors(s, p)) {
@@ -109,8 +129,12 @@ export function pathTo(s: GameState, reach: Map<number, ReachNode>, x: number, y
   return path;
 }
 
-/** Linha de visão por Bresenham; unidades e Bases no caminho bloqueiam. */
+/**
+ * Linha de visão por Bresenham. Unidades, Bases e barricadas no caminho bloqueiam;
+ * fumaça bloqueia no caminho e também esconde o alvo.
+ */
 export function lineOfSight(s: GameState, a: Pos, b: Pos): boolean {
+  if (inSmoke(s, b.x, b.y)) return false;
   let x0 = a.x;
   let y0 = a.y;
   const dx = Math.abs(b.x - x0);
@@ -129,7 +153,7 @@ export function lineOfSight(s: GameState, a: Pos, b: Pos): boolean {
       y0 += sy;
     }
     if (x0 === b.x && y0 === b.y) break;
-    if (unitAt(s, x0, y0) || baseAt(s, x0, y0)) return false;
+    if (unitAt(s, x0, y0) || baseAt(s, x0, y0) || barricadeAt(s, x0, y0) || inSmoke(s, x0, y0)) return false;
   }
   return true;
 }
@@ -162,5 +186,11 @@ export function crossCells(s: GameState, cx: number, cy: number): Pos[] {
     const y = cy + DIRS[d].y;
     if (inBounds(s, x, y)) cells.push({ x, y });
   }
+  return cells;
+}
+
+export function squareCells(s: GameState, cx: number, cy: number, r: number): Pos[] {
+  const cells: Pos[] = [];
+  for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) if (inBounds(s, x, y)) cells.push({ x, y });
   return cells;
 }

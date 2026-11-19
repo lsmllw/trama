@@ -1,4 +1,4 @@
-import type { ClassDef, ClassId, Terrain, Weight } from './types';
+import type { AbilityId, ClassDef, ClassId, ItemId, NodeColor, Terrain, Weight } from './types';
 
 // Valores de level 1 do GDD. Tudo aqui é ponto de partida para balancear.
 export const CLASSES: Record<ClassId, ClassDef> = {
@@ -50,12 +50,12 @@ export const CLASSES: Record<ClassId, ClassDef> = {
   mecanico: {
     id: 'mecanico', name: 'Mecânico', abbr: 'Me', arm: 'engenharia', weight: 'medio',
     mov: 4, hp: 22, atq: 5, armadura: 4, stamina: 8, melee: true, moveAfterAction: false,
-    role: 'Reparo (Fase 2)',
+    role: 'Reparo, suporte a máquinas',
   },
   construtor: {
     id: 'construtor', name: 'Construtor', abbr: 'Co', arm: 'engenharia', weight: 'pesado',
     mov: 3, hp: 30, atq: 5, armadura: 6, stamina: 7, melee: true, moveAfterAction: false,
-    role: 'Terreno (Fase 2)',
+    role: 'Barricadas',
   },
   medico: {
     id: 'medico', name: 'Médico', abbr: 'Md', arm: 'suporte', weight: 'leve',
@@ -113,9 +113,74 @@ export const TERRAIN: Record<Terrain, TerrainDef> = {
   lama: { label: 'Lama', cost: 2, armorBonus: 0, cover: false },
   agua: { label: 'Água', cost: Infinity, armorBonus: 0, cover: false },
   ponte: { label: 'Ponte', cost: 1, armorBonus: 0, cover: false },
-  no_verde: { label: 'Nó verde (Fase 2)', cost: 1, armorBonus: 0, cover: false },
-  no_roxo: { label: 'Nó roxo (Fase 2)', cost: 1, armorBonus: 0, cover: false },
-  no_laranja: { label: 'Nó laranja (Fase 2)', cost: 1, armorBonus: 0, cover: false },
-  fonte: { label: 'Fonte Prismática (Fase 2)', cost: 1, armorBonus: 0, cover: false },
+  no_verde: { label: 'Nó verde', cost: 1, armorBonus: 0, cover: false },
+  no_roxo: { label: 'Nó roxo', cost: 1, armorBonus: 0, cover: false },
+  no_laranja: { label: 'Nó laranja', cost: 1, armorBonus: 0, cover: false },
+  fonte: { label: 'Fonte Prismática', cost: 1, armorBonus: 0, cover: false },
   base: { label: 'Base', cost: Infinity, armorBonus: 0, cover: false },
 };
+
+// ---------- Progressão ----------
+
+/** XP total para chegar a cada level (índice = level − 1). */
+export const LEVEL_XP = [0, 3, 6, 10, 15];
+export const MAX_LEVEL = LEVEL_XP.length;
+/** Level em que a habilidade da classe é liberada. */
+export const ABILITY_LEVEL = 2;
+export const LEVEL_HP = 3;
+export const LEVEL_ATQ = 1;
+export const XP_HIT = 1;
+export const XP_KILL = 2;
+export const XP_SUPPORT = 1;
+
+// ---------- Itens ----------
+
+export const MAX_ITEMS = 2;
+export const NODE_CHARGES = 3;
+
+export interface ItemDef {
+  id: ItemId;
+  name: string;
+  color: Exclude<NodeColor, 'prisma'>;
+  desc: string;
+}
+
+export const ITEMS: Record<ItemId, ItemDef> = {
+  tonico: { id: 'tonico', name: 'Tônico', color: 'verde', desc: 'Recupera 12 HP.' },
+  oleo: { id: 'oleo', name: 'Óleo de combate', color: 'laranja', desc: '+3 ATQ no próximo ataque.' },
+  foco: { id: 'foco', name: 'Elixir de foco', color: 'roxo', desc: '+1 lance no próximo Confronto e +4 Stamina.' },
+};
+export const ITEM_BY_COLOR: Record<Exclude<NodeColor, 'prisma'>, ItemId> = { verde: 'tonico', laranja: 'oleo', roxo: 'foco' };
+export const TONICO_HEAL = 12;
+export const OLEO_ATQ = 3;
+export const FOCO_STAMINA = 4;
+
+// ---------- Habilidades (uma por classe, liberada no level 2) ----------
+
+export interface AbilityDef {
+  id: AbilityId;
+  name: string;
+  cost: number;
+  desc: string;
+}
+
+export const ABILITIES: Record<ClassId, AbilityDef> = {
+  espadachim: { id: 'avanco', name: 'Avanço', cost: 2, desc: 'Avança em linha reta até um inimigo a 2–3 casas e abre Confronto com +1 lance.' },
+  atirador: { id: 'tiroCerteiro', name: 'Tiro certeiro', cost: 2, desc: 'Tiro a 2–5 casas que ignora esquiva e cobertura.' },
+  tank: { id: 'provocar', name: 'Provocar', cost: 3, desc: 'Inimigos a até 2 casas só podem atacar o Tank na próxima fase deles.' },
+  cavaleiro: { id: 'investida', name: 'Investida', cost: 2, desc: 'Ataque corpo a corpo com +1 lance e +2 ATQ.' },
+  blindado: { id: 'atropelar', name: 'Atropelar', cost: 2, desc: 'Empurra um inimigo adjacente 1 casa (ATQ − ARM). Se ele bater em algo, +6 de dano.' },
+  morteiro: { id: 'fumaca', name: 'Fumaça', cost: 3, desc: 'Área 3×3 a 2–6 casas que bloqueia tiros até o fim da próxima rodada.' },
+  canhao: { id: 'perfurante', name: 'Perfurante', cost: 3, desc: 'Tiro em linha (4–8) que atravessa e atinge até 2 unidades. Não pode ter andado.' },
+  bombardeiro: { id: 'mina', name: 'Mina', cost: 2, desc: 'Arma uma mina escondida a até 2 casas: 8 de dano em quem pisar.' },
+  mecanico: { id: 'reparo', name: 'Reparo', cost: 1, desc: 'Recupera 8 HP da sua Base, de uma barricada ou de um Blindado/Canhão adjacente.' },
+  construtor: { id: 'barricada', name: 'Barricada', cost: 2, desc: 'Ergue uma barricada (15 HP) numa casa adjacente: bloqueia passagem e tiros.' },
+  medico: { id: 'curaArea', name: 'Cura em área', cost: 2, desc: 'Cura 6 HP de todos os aliados a até 2 casas, inclusive ele.' },
+  espiao: { id: 'furtar', name: 'Furtar', cost: 1, desc: 'Rouba um item de um inimigo adjacente.' },
+};
+
+export const MINE_DAMAGE = 8;
+export const BARRICADE_HP = 15;
+export const REPAIR_AMOUNT = 8;
+export const AREA_HEAL = 6;
+export const RAM_BONUS = 6;

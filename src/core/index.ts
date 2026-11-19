@@ -6,4 +6,5 @@ export * from './grid';
 export * from './combat';
 export * from './confronto';
 export * from './game';
+export * from './abilities';
 export * from './ai';

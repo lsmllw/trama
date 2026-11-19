@@ -1,4 +1,4 @@
-import { CLASSES, ESQUIVA, TERRAIN } from './data';
+import { ABILITIES, ABILITY_LEVEL, CLASSES, ESQUIVA, LEVEL_ATQ, LEVEL_HP, LEVEL_XP, MAX_LEVEL, OLEO_ATQ, TERRAIN, XP_KILL } from './data';
 import { terrainAt } from './grid';
 import { otherTeam } from './types';
 import type { Base, GameState, Pos, Team, Unit } from './types';
@@ -8,7 +8,19 @@ export const teamName = (t: Team): string => (t === 'azul' ? 'Azul' : 'Vermelho'
 
 export function log(s: GameState, msg: string): void {
   s.log.push(msg);
-  if (s.log.length > 200) s.log.splice(0, s.log.length - 200);
+  if (s.log.length > 300) s.log.splice(0, s.log.length - 300);
+}
+
+/** ATQ atual: classe + level + bônus temporário do Confronto. */
+export function unitAtq(u: Unit): number {
+  return CLASSES[u.cls].atq + (u.level - 1) * LEVEL_ATQ + u.tempAtq;
+}
+
+/** Gasta o Óleo de combate, se houver, e devolve o bônus de ATQ. */
+export function consumeOil(u: Unit): number {
+  if (!u.oil) return 0;
+  u.oil = false;
+  return OLEO_ATQ;
 }
 
 /** Armadura somando o bônus do terreno onde a unidade está. */
@@ -29,8 +41,22 @@ export function rangedDamage(s: GameState, atq: number, mult: number, target: Un
   return Math.max(1, Math.floor(base * (1 - dodge) * (1 - cover)));
 }
 
-export function hitUnit(s: GameState, u: Unit, amount: number): void {
+export function grantXp(s: GameState, u: Unit, amount: number): void {
   if (!u.alive || amount <= 0) return;
+  u.xp += amount;
+  while (u.level < MAX_LEVEL && u.xp >= LEVEL_XP[u.level]) {
+    u.level++;
+    u.maxHp += LEVEL_HP;
+    u.hp += LEVEL_HP;
+    s.events.push({ kind: 'texto', x: u.x, y: u.y, text: `Level ${u.level}!`, color: '#ffd25a' });
+    log(s, `${unitName(u)} subiu para o level ${u.level}.`);
+    if (u.level === ABILITY_LEVEL) log(s, `  Habilidade liberada: ${ABILITIES[u.cls].name}.`);
+  }
+}
+
+/** Aplica dano. `by` recebe XP de abate se for inimigo. Devolve true se matou. */
+export function hitUnit(s: GameState, u: Unit, amount: number, by: Unit | null = null): boolean {
+  if (!u.alive || amount <= 0) return false;
   u.hp = Math.max(0, u.hp - amount);
   s.events.push({ kind: 'dano', x: u.x, y: u.y, amount });
   if (u.hp === 0) {
@@ -38,7 +64,10 @@ export function hitUnit(s: GameState, u: Unit, amount: number): void {
     s.stats[otherTeam(u.team)].kills++;
     s.events.push({ kind: 'abate', x: u.x, y: u.y });
     log(s, `${unitName(u)} foi abatido.`);
+    if (by && by.team !== u.team) grantXp(s, by, XP_KILL);
+    return true;
   }
+  return false;
 }
 
 export function hitBase(s: GameState, b: Base, amount: number): void {
@@ -50,23 +79,35 @@ export function hitBase(s: GameState, b: Base, amount: number): void {
   if (b.hp === 0) log(s, `A Base ${teamName(b.team)} foi destruída!`);
 }
 
+export function hitBarricade(s: GameState, x: number, y: number, amount: number): void {
+  const b = s.barricades.find((v) => v.x === x && v.y === y);
+  if (!b || amount <= 0) return;
+  b.hp -= amount;
+  s.events.push({ kind: 'dano', x, y, amount });
+  if (b.hp <= 0) {
+    s.barricades = s.barricades.filter((v) => v !== b);
+    log(s, `Barricada ${teamName(b.team)} destruída.`);
+  }
+}
+
 export function healUnit(s: GameState, u: Unit, amount: number): number {
-  const max = CLASSES[u.cls].hp;
-  const healed = Math.min(amount, max - u.hp);
+  const healed = Math.min(amount, u.maxHp - u.hp);
   u.hp += healed;
   if (healed > 0) s.events.push({ kind: 'cura', x: u.x, y: u.y, amount: healed });
   return healed;
 }
 
-/** Dano em área (morteiro, granada). Atinge aliados, inimigos e Bases. */
-export function areaDamage(s: GameState, cells: Pos[], atq: number, mult: number): void {
+/** Dano em área (morteiro, granada). Atinge aliados, inimigos, Bases e barricadas. Devolve inimigos atingidos. */
+export function areaDamage(s: GameState, cells: Pos[], atq: number, mult: number, by: Unit | null): number {
   s.events.push({ kind: 'impacto', cells });
+  let enemiesHit = 0;
   for (const c of cells) {
     const u = s.units.find((v) => v.alive && v.x === c.x && v.y === c.y);
     if (u) {
       const dmg = rawDamage(atq, mult, effectiveArmor(s, u));
       log(s, `  ${unitName(u)} leva ${dmg} de dano.`);
-      hitUnit(s, u, dmg);
+      if (by && u.team !== by.team) enemiesHit++;
+      hitUnit(s, u, dmg, by && by.alive ? by : null);
     }
     for (const b of [s.bases.azul, s.bases.vermelho]) {
       if (b.x === c.x && b.y === c.y) {
@@ -75,7 +116,9 @@ export function areaDamage(s: GameState, cells: Pos[], atq: number, mult: number
         hitBase(s, b, dmg);
       }
     }
+    hitBarricade(s, c.x, c.y, Math.floor(atq * mult));
   }
+  return enemiesHit;
 }
 
 export const aliveUnits = (s: GameState, team: Team): Unit[] => s.units.filter((u) => u.alive && u.team === team);

@@ -1,9 +1,9 @@
 // Desenho do tabuleiro em canvas. Protótipo cinza: formas simples, sem sprites.
 
 import { CLASSES, strikeCountdown } from '../core';
-import type { GameEvent, GameState, Pos, Terrain, Unit } from '../core';
+import type { GameEvent, GameState, Pos, Team, Terrain, Unit } from '../core';
 
-export const TILE = 48;
+export const TILE = 40;
 
 const TEAM_COLOR = { azul: '#3d7be0', vermelho: '#d4483b' } as const;
 const TEAM_DARK = { azul: '#1f3f73', vermelho: '#6e231c' } as const;
@@ -24,6 +24,9 @@ const TERRAIN_FILL: Record<Terrain, string> = {
 };
 
 export interface Highlights {
+  /** Time do jogador: só as minas dele aparecem. */
+  viewer: Team;
+  abilityTargets: Pos[];
   moves: Pos[];
   targets: Pos[];
   heals: Pos[];
@@ -78,6 +81,7 @@ export class Renderer {
       else if (e.kind === 'abate') this.floats.push({ x: e.x, y: e.y, text: 'abatido', color: '#ffffff', t0: now + 150 });
       else if (e.kind === 'impacto') this.flashes.push({ cells: e.cells, t0: now });
       else if (e.kind === 'tiro') this.shots.push({ from: e.from, to: e.to, t0: now });
+      else if (e.kind === 'texto') this.floats.push({ x: e.x, y: e.y, text: e.text, color: e.color, t0: now + 100 });
     }
   }
 
@@ -98,7 +102,9 @@ export class Renderer {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.drawTerrain(s);
+    this.drawNodes(s);
     this.drawBases(s);
+    this.drawStructures(s, h);
 
     const fillCells = (cells: Pos[], color: string) => {
       ctx.fillStyle = color;
@@ -111,6 +117,9 @@ export class Renderer {
     ctx.lineWidth = 2;
     ctx.strokeStyle = 'rgba(255, 90, 80, 0.95)';
     for (const c of h.targets) ctx.strokeRect(c.x * TILE + 3, c.y * TILE + 3, TILE - 6, TILE - 6);
+    fillCells(h.abilityTargets, 'rgba(180, 120, 255, 0.35)');
+    ctx.strokeStyle = 'rgba(200, 150, 255, 0.95)';
+    for (const c of h.abilityTargets) ctx.strokeRect(c.x * TILE + 3, c.y * TILE + 3, TILE - 6, TILE - 6);
 
     this.drawStrikes(s, now);
 
@@ -192,9 +201,9 @@ export class Renderer {
         ctx.lineWidth = 1.5;
         for (const dy of [-8, 6]) {
           ctx.beginPath();
-          ctx.moveTo(px + 8, cy + dy);
-          ctx.quadraticCurveTo(px + 16, cy + dy - 4, px + 24, cy + dy);
-          ctx.quadraticCurveTo(px + 32, cy + dy + 4, px + 40, cy + dy);
+          ctx.moveTo(px + 4, cy + dy);
+          ctx.quadraticCurveTo(px + 12, cy + dy - 4, px + 20, cy + dy);
+          ctx.quadraticCurveTo(px + 28, cy + dy + 4, px + 36, cy + dy);
           ctx.stroke();
         }
         break;
@@ -262,6 +271,61 @@ export class Renderer {
     }
   }
 
+  private drawNodes(s: GameState): void {
+    const ctx = this.ctx;
+    for (const n of s.nodes) {
+      const px = n.x * TILE;
+      const py = n.y * TILE;
+      for (let i = 0; i < n.charges; i++) {
+        ctx.fillStyle = n.color === 'verde' ? '#6fd58a' : n.color === 'roxo' ? '#b88cf0' : n.color === 'laranja' ? '#f0a050' : '#e6e6ff';
+        ctx.fillRect(px + 5 + i * 6, py + 4, 4, 4);
+      }
+    }
+  }
+
+  private drawStructures(s: GameState, h: Highlights): void {
+    const ctx = this.ctx;
+    for (const sm of s.smoke) {
+      ctx.fillStyle = 'rgba(200, 200, 210, 0.35)';
+      for (const c of sm.cells) {
+        ctx.beginPath();
+        ctx.arc(c.x * TILE + TILE / 2, c.y * TILE + TILE / 2, TILE * 0.55, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    for (const b of s.barricades) {
+      const px = b.x * TILE;
+      const py = b.y * TILE;
+      ctx.fillStyle = '#6b5a45';
+      ctx.fillRect(px + 4, py + 10, TILE - 8, TILE - 20);
+      ctx.strokeStyle = b.team === 'azul' ? '#3d7be0' : '#d4483b';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px + 4, py + 10, TILE - 8, TILE - 20);
+      ctx.strokeStyle = '#8a7660';
+      ctx.beginPath();
+      ctx.moveTo(px + 8, py + 12);
+      ctx.lineTo(px + TILE - 8, py + TILE - 12);
+      ctx.moveTo(px + TILE - 8, py + 12);
+      ctx.lineTo(px + 8, py + TILE - 12);
+      ctx.stroke();
+      this.bar(px + 5, py + TILE - 7, TILE - 10, 3, b.hp / 15, '#c9a227');
+    }
+    for (const m of s.mines) {
+      if (m.team !== h.viewer) continue;
+      const cx = m.x * TILE + TILE / 2;
+      const cy = m.y * TILE + TILE / 2;
+      ctx.strokeStyle = '#ffcf5a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.moveTo(cx - 9, cy);
+      ctx.lineTo(cx + 9, cy);
+      ctx.moveTo(cx, cy - 9);
+      ctx.lineTo(cx, cy + 9);
+      ctx.stroke();
+    }
+  }
+
   private drawStrikes(s: GameState, now: number): void {
     const ctx = this.ctx;
     const blink = 0.35 + 0.25 * Math.sin(now / 160);
@@ -282,7 +346,7 @@ export class Renderer {
     const p = this.drawPos(u, now);
     const px = p.x * TILE;
     const py = p.y * TILE;
-    const inset = 6;
+    const inset = 5;
     const dim = u.activated && h.activeId !== u.id;
 
     ctx.globalAlpha = dim ? 0.5 : 1;
@@ -300,16 +364,16 @@ export class Renderer {
     const cy = py + TILE / 2 - 3;
     ctx.fillStyle = '#ece4cf';
     ctx.beginPath();
-    const tipX = cx + f[0] * 19;
-    const tipY = cy + f[1] * 16;
+    const tipX = cx + f[0] * 16;
+    const tipY = cy + f[1] * 13;
     ctx.moveTo(tipX, tipY);
-    ctx.lineTo(cx + f[0] * 13 - f[1] * 5, cy + f[1] * 11 - f[0] * 5);
-    ctx.lineTo(cx + f[0] * 13 + f[1] * 5, cy + f[1] * 11 + f[0] * 5);
+    ctx.lineTo(cx + f[0] * 11 - f[1] * 4, cy + f[1] * 9 - f[0] * 4);
+    ctx.lineTo(cx + f[0] * 11 + f[1] * 4, cy + f[1] * 9 + f[0] * 4);
     ctx.closePath();
     ctx.fill();
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 14px system-ui, sans-serif';
+    ctx.font = 'bold 13px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(def.abbr, cx, cy);
@@ -317,10 +381,27 @@ export class Renderer {
     if (u.ready) {
       ctx.fillStyle = '#ffd25a';
       ctx.font = 'bold 11px system-ui, sans-serif';
-      ctx.fillText('!', px + TILE - 9, py + 9);
+      ctx.fillText('!', px + TILE - 7, py + 8);
+    }
+    if (u.level > 1) {
+      ctx.fillStyle = '#1b1d22';
+      ctx.fillRect(px + 1, py + 1, 12, 11);
+      ctx.fillStyle = '#ffd25a';
+      ctx.font = 'bold 10px system-ui, sans-serif';
+      ctx.fillText(String(u.level), px + 7, py + 7);
+    }
+    u.items.forEach((it, i) => {
+      ctx.fillStyle = it === 'tonico' ? '#6fd58a' : it === 'foco' ? '#b88cf0' : '#f0a050';
+      ctx.fillRect(px + TILE - 9, py + 13 + i * 6, 5, 5);
+    });
+    if (u.oil || u.focus || u.tauntBy) {
+      ctx.fillStyle = u.tauntBy ? '#ff7a6a' : '#c9e7ff';
+      ctx.beginPath();
+      ctx.arc(px + 6, py + TILE - 16, 3, 0, Math.PI * 2);
+      ctx.fill();
     }
 
-    this.bar(px + 5, py + TILE - 10, TILE - 10, 4, u.hp / def.hp, '#7fd36b');
+    this.bar(px + 5, py + TILE - 10, TILE - 10, 4, u.hp / u.maxHp, '#7fd36b');
     this.bar(px + 5, py + TILE - 5, TILE - 10, 2, u.stamina / def.stamina, '#e8c547');
     ctx.globalAlpha = 1;
 

@@ -2,8 +2,8 @@
 // Velocidade de reação = número de lances (Leve 3, Médio 2, Pesado 1).
 // Quem não joga lance num tempo fica em Recuperação ("esperar").
 
-import { BASE_LANCES, CLASSES, FORCA, LANCE_COST, MAX_LANCES, TEMPOS, WEIGHT_RANK } from './data';
-import { effectiveArmor, hitUnit, log, rawDamage, unitName } from './combat';
+import { BASE_LANCES, CLASSES, FORCA, LANCE_COST, MAX_LANCES, TEMPOS, WEIGHT_RANK, XP_HIT } from './data';
+import { consumeOil, effectiveArmor, grantXp, hitUnit, log, rawDamage, unitAtq, unitName } from './combat';
 import { attackSide, dirFromTo, getUnit, terrainAt } from './grid';
 import type { Side } from './grid';
 import type { GameState, Unit, Weight } from './types';
@@ -75,13 +75,22 @@ function mudPenalty(s: GameState, u: Unit, notes: string[]): number {
 }
 
 /** Quantos lances cada lado terá, com os modificadores do GDD. */
-export function countLances(s: GameState, attacker: Unit, defender: Unit): { atk: LanceCount; def: LanceCount; side: Side } {
+export function countLances(
+  s: GameState,
+  attacker: Unit,
+  defender: Unit,
+  bonusLances = 0,
+): { atk: LanceCount; def: LanceCount; side: Side } {
   const wa = CLASSES[attacker.cls].weight;
   const wd = CLASSES[defender.cls].weight;
   const side = attackSide(defender, attacker);
 
   const atkNotes = [`${wa === 'medio' ? 'Médio' : wa === 'leve' ? 'Leve' : 'Pesado'} ${BASE_LANCES[wa]}`];
   let a = BASE_LANCES[wa];
+  if (bonusLances) {
+    a += bonusLances;
+    atkNotes.push(`Habilidade +${bonusLances}`);
+  }
   if (side === 'flanco') {
     a += 1;
     atkNotes.push('Flanco +1');
@@ -90,6 +99,10 @@ export function countLances(s: GameState, attacker: Unit, defender: Unit): { atk
     atkNotes.push('Costas +2');
   }
   a += mudPenalty(s, attacker, atkNotes);
+  if (attacker.focus) {
+    a += 1;
+    atkNotes.push('Foco +1');
+  }
 
   const defNotes = [`${wd === 'medio' ? 'Médio' : wd === 'leve' ? 'Leve' : 'Pesado'} ${BASE_LANCES[wd]}`];
   let d = BASE_LANCES[wd];
@@ -102,16 +115,29 @@ export function countLances(s: GameState, attacker: Unit, defender: Unit): { atk
     defNotes.push('Colina +1');
   }
   d += mudPenalty(s, defender, defNotes);
+  if (defender.focus) {
+    d += 1;
+    defNotes.push('Foco +1');
+  }
 
   return { atk: cap(a, atkNotes), def: cap(d, defNotes), side };
 }
 
-export function startConfronto(s: GameState, attackerId: string, defenderId: string): ConfrontoState {
+export interface ConfrontoBonus {
+  lances?: number;
+  atq?: number;
+}
+
+export function startConfronto(s: GameState, attackerId: string, defenderId: string, bonus: ConfrontoBonus = {}): ConfrontoState {
   const attacker = getUnit(s, attackerId);
   const defender = getUnit(s, defenderId);
-  const c = countLances(s, attacker, defender);
-  // A Prontidão é gasta ao defender.
+  const c = countLances(s, attacker, defender, bonus.lances ?? 0);
+  // Prontidão e Foco são gastos no Confronto; o Óleo só vale para quem ataca.
   defender.ready = false;
+  attacker.focus = false;
+  defender.focus = false;
+  attacker.tempAtq = (bonus.atq ?? 0) + consumeOil(attacker);
+  defender.tempAtq = 0;
   log(
     s,
     `Confronto: ${unitName(attacker)} (${c.atk.lances} lance${c.atk.lances > 1 ? 's' : ''}) ataca ${unitName(defender)} (${c.def.lances}) pelo ${c.side}.`,
@@ -189,8 +215,7 @@ export function clash(a: Lance, b: Lance, wa: Weight, wb: Weight): Clash {
 
 /** Dano que um acerto com este multiplicador causaria. */
 export function hitDamage(s: GameState, from: Unit, to: Unit, mult: number): number {
-  const fd = CLASSES[from.cls];
-  return rawDamage(fd.atq, mult * FORCA[fd.weight], effectiveArmor(s, to));
+  return rawDamage(unitAtq(from), mult * FORCA[CLASSES[from.cls].weight], effectiveArmor(s, to));
 }
 
 /** Resolve o tempo atual com as duas escolhas. Escolhas impossíveis viram "esperar". */
@@ -214,8 +239,8 @@ export function resolveTempo(s: GameState, cs: ConfrontoState, atkChoice: Lance,
   const c = clash(a, d, CLASSES[atkU.cls].weight, CLASSES[defU.cls].weight);
   const toDef = c.aHit > 0 ? hitDamage(s, atkU, defU, c.aHit) : 0;
   const toAtk = c.bHit > 0 ? hitDamage(s, defU, atkU, c.bHit) : 0;
-  hitUnit(s, defU, toDef);
-  hitUnit(s, atkU, toAtk);
+  hitUnit(s, defU, toDef, atkU);
+  hitUnit(s, atkU, toAtk, defU);
 
   const exposed: SideKey | null = c.exposeA ? 'atk' : c.exposeB ? 'def' : null;
   const parts = [`Tempo ${cs.tempo}: ${LANCE_LABEL[a]} × ${LANCE_LABEL[d]}. ${c.why}`];
@@ -239,5 +264,10 @@ export function finishConfronto(s: GameState, cs: ConfrontoState): void {
   if (defU.alive) defU.facing = dirFromTo(defU, atkU);
   const dealt = cs.results.reduce((n, r) => n + r.defTook, 0);
   const taken = cs.results.reduce((n, r) => n + r.atkTook, 0);
+  atkU.tempAtq = 0;
+  defU.tempAtq = 0;
   log(s, `Fim do Confronto: atacante causou ${dealt}, levou ${taken}.`);
+  // Vencer o Confronto (causar mais dano do que levou) dá XP.
+  if (dealt > taken) grantXp(s, atkU, XP_HIT);
+  else if (taken > dealt) grantXp(s, defU, XP_HIT);
 }

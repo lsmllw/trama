@@ -73,6 +73,23 @@ export type Terrain =
 
 export type Dir = 'N' | 'S' | 'E' | 'W';
 
+export type ItemId = 'tonico' | 'oleo' | 'foco';
+export type NodeColor = 'verde' | 'roxo' | 'laranja' | 'prisma';
+
+export type AbilityId =
+  | 'avanco'
+  | 'tiroCerteiro'
+  | 'provocar'
+  | 'investida'
+  | 'atropelar'
+  | 'fumaca'
+  | 'perfurante'
+  | 'mina'
+  | 'reparo'
+  | 'barricada'
+  | 'curaArea'
+  | 'furtar';
+
 export interface Pos {
   x: number;
   y: number;
@@ -92,6 +109,47 @@ export interface Unit {
   /** Prontidão: não fez ação na última ativação; +1 lance ao defender. */
   ready: boolean;
   alive: boolean;
+  level: number;
+  xp: number;
+  maxHp: number;
+  items: ItemId[];
+  /** Óleo de combate ativo: +3 ATQ no próximo ataque. */
+  oil: boolean;
+  /** Elixir de foco ativo: +1 lance no próximo Confronto. */
+  focus: boolean;
+  /** Bônus de ATQ que dura só o Confronto atual (Investida). */
+  tempAtq: number;
+  /** Provocada por este Tank até o fim da fase `tauntUntil`. */
+  tauntBy: string | null;
+  tauntUntil: number;
+}
+
+export interface Barricade {
+  id: number;
+  team: Team;
+  x: number;
+  y: number;
+  hp: number;
+}
+
+export interface Smoke {
+  cells: Pos[];
+  /** Some quando a fase `untilPhase` terminar. */
+  untilPhase: number;
+}
+
+export interface Mine {
+  id: number;
+  team: Team;
+  x: number;
+  y: number;
+}
+
+export interface ColorNode {
+  x: number;
+  y: number;
+  color: NodeColor;
+  charges: number;
 }
 
 export interface Base {
@@ -112,7 +170,7 @@ export interface MortarStrike {
   cells: Pos[];
   atq: number;
   mult: number;
-  /** Cai quando completedActivations chegar a este valor. */
+  /** Cai no começo da fase de número `resolveAt` (a próxima fase de quem atirou). */
   resolveAt: number;
 }
 
@@ -125,6 +183,8 @@ export interface Activation {
   hasMoved: boolean;
   hasActed: boolean;
   ran: boolean;
+  /** Pisou numa mina: o movimento não pode ser desfeito. */
+  noUndo: boolean;
 }
 
 export interface TeamStats {
@@ -137,7 +197,8 @@ export type GameEvent =
   | { kind: 'cura'; x: number; y: number; amount: number }
   | { kind: 'abate'; x: number; y: number }
   | { kind: 'impacto'; cells: Pos[] }
-  | { kind: 'tiro'; from: Pos; to: Pos };
+  | { kind: 'tiro'; from: Pos; to: Pos }
+  | { kind: 'texto'; x: number; y: number; text: string; color: string };
 
 export type Winner = Team | 'empate' | null;
 
@@ -149,14 +210,19 @@ export interface GameState {
   bases: Record<Team, Base>;
   round: number;
   maxRounds: number;
-  /** Time que abre a rodada atual. */
+  /** Time que abre cada rodada (sorteado no início). */
   startingTeam: Team;
-  /** Time que ativa agora. */
+  /** Time cuja fase está acontecendo. */
   activeTeam: Team;
+  /** Contador de fases desde o início (1, 2, 3…). Cada rodada tem duas. */
+  phase: number;
   activation: Activation | null;
-  completedActivations: number;
   strikes: MortarStrike[];
-  nextStrikeId: number;
+  nextId: number;
+  barricades: Barricade[];
+  smoke: Smoke[];
+  mines: Mine[];
+  nodes: ColorNode[];
   stats: Record<Team, TeamStats>;
   log: string[];
   events: GameEvent[];

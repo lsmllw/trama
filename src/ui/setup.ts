@@ -68,7 +68,7 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
         h(
           'p',
           { class: 'lead' },
-          'Escolha 5 unidades (no máximo 2 da mesma classe). O Vermelho é controlado pela máquina, com um time sorteado. Protótipo da Fase 1: sem arte, cores, itens e construções ainda.',
+          'Escolha 5 unidades (no máximo 2 da mesma classe). O Vermelho é controlado pela máquina, com um time sorteado. Cada classe libera sua habilidade no level 2. Protótipo: sem arte e construções ainda.',
         ),
         h('div', { class: 'class-grid' }, cards),
         h(

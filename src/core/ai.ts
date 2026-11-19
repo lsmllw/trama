@@ -2,30 +2,49 @@
 // com ruído conforme a dificuldade. No Confronto, joga uma estratégia mista
 // que aprende com o histórico de lances do oponente.
 
-import { aliveUnits, effectiveArmor, rawDamage, rangedDamage } from './combat';
-import { BASE_MELEE_MULT, CLASSES, LANCE_COST, RUN_BONUS, RUN_COST, TERRAIN } from './data';
-import { canStop, crossCells, dirFromTo, fromKey, getUnit, manhattan, reachable, terrainAt } from './grid';
+import { aliveUnits, effectiveArmor, rawDamage, rangedDamage, unitAtq } from './combat';
+import {
+  AREA_HEAL,
+  BASE_MELEE_MULT,
+  CLASSES,
+  LANCE_COST,
+  OLEO_ATQ,
+  RAM_BONUS,
+  REPAIR_AMOUNT,
+  RUN_BONUS,
+  RUN_COST,
+  TERRAIN,
+  TONICO_HEAL,
+} from './data';
+import { baseAt, canStop, crossCells, DIRS, dirFromTo, fromKey, getUnit, inBounds, manhattan, moveCost, reachable, terrainAt, unitAt } from './grid';
 import { nextRandom } from './rng';
 import {
   attackArea,
+  attackBarricade,
   attackBaseMelee,
   attackMelee,
   attackRanged,
   attackRangedBase,
   baseMovement,
   beginActivation,
+  canUseItem,
+  collect,
+  currentTargets,
   endActivation,
   heal,
   moveTo,
   rotate,
   run,
   targetsFrom,
+  useItem,
 } from './game';
 import type { Target } from './game';
+import { abilityBlock, abilityOf, abilityTargets, currentAbilityTargets, useAbility } from './abilities';
+import type { AbilityTarget } from './abilities';
 import { canSpend, clash, countLances, finishConfronto, hitDamage, resolveTempo, sideUnit, useRead } from './confronto';
 import type { ConfrontoState, Lance, SideKey } from './confronto';
 import { otherTeam } from './types';
-import type { GameState, Pos, Team, Unit } from './types';
+import type { GameState, NodeColor, Pos, Team, Unit } from './types';
 
 export type Difficulty = 'recruta' | 'veterano';
 
@@ -53,26 +72,34 @@ export interface LanceMemory {
 }
 export const newMemory = (): LanceMemory => ({ golpe: 0, guarda: 0, finta: 0 });
 
+/** Ação planejada: alvo comum, item (pelo índice), habilidade (pela casa) ou nada. */
+export type PlannedAction =
+  | Target
+  | { kind: 'item'; index: number }
+  | { kind: 'habilidade'; x: number; y: number }
+  | null;
+
 export interface Plan {
   unitId: string;
   run: boolean;
   moveTo: Pos | null;
-  action: Target | null;
+  action: PlannedAction;
+  /** Cor escolhida ao coletar na Fonte Prismática. */
+  color?: Exclude<NodeColor, 'prisma'>;
   score: number;
 }
 
 // ---------- Avaliação ----------
 
-const unitValue = (u: Unit) => CLASSES[u.cls].atq + CLASSES[u.cls].hp / 4;
+const unitValue = (u: Unit) => CLASSES[u.cls].atq + u.maxHp / 4;
 
-/** Dano que os inimigos de `team` poderiam causar a quem ficar em `cell` na próxima rodada. */
+/** Dano que os inimigos de `team` poderiam causar a quem ficar em `cell` na próxima fase. */
 function threatAt(s: GameState, team: Team, cell: Pos, armor: number): number {
   let threat = 0;
   for (const e of aliveUnits(s, otherTeam(team))) {
     const d = CLASSES[e.cls];
     const reach = d.ranged ? d.ranged.max : 1;
-    const dist = manhattan(e, cell);
-    if (dist <= d.mov + reach) threat += Math.max(1, d.atq * 1.6 - armor);
+    if (manhattan(e, cell) <= d.mov + reach) threat += Math.max(1, unitAtq(e) * 1.6 - armor);
   }
   return threat;
 }
@@ -86,13 +113,15 @@ function strikeDanger(s: GameState, cell: Pos, armor: number): number {
 }
 
 /** Estimativa grosseira do saldo de um Confronto iniciado de `from`. */
-function estimateMelee(s: GameState, u: Unit, from: Pos, target: Unit): number {
+function estimateMelee(s: GameState, u: Unit, from: Pos, target: Unit, bonusLances = 0, bonusAtq = 0): number {
   const ox = u.x;
   const oy = u.y;
   u.x = from.x;
   u.y = from.y;
-  const c = countLances(s, u, target);
+  const c = countLances(s, u, target, bonusLances);
+  u.tempAtq = bonusAtq + (u.oil ? OLEO_ATQ : 0);
   const hitA = hitDamage(s, u, target, 1.75);
+  u.tempAtq = 0;
   const hitD = hitDamage(s, target, u, 1.75);
   u.x = ox;
   u.y = oy;
@@ -113,18 +142,18 @@ function areaScore(s: GameState, u: Unit, from: Pos, x: number, y: number): numb
   const def = CLASSES[u.cls];
   const r = def.ranged!;
   const delayed = r.kind === 'morteiro';
+  const atq = unitAtq(u);
   let score = 0;
   for (const c of crossCells(s, x, y)) {
-    // A própria unidade estará em `from`.
     const isSelf = c.x === from.x && c.y === from.y;
     const occ = isSelf ? u : s.units.find((v) => v.alive && v.id !== u.id && v.x === c.x && v.y === c.y);
     if (occ) {
-      const dmg = rawDamage(def.atq, r.mult, effectiveArmor(s, occ));
+      const dmg = rawDamage(atq, r.mult, effectiveArmor(s, occ));
       if (occ.team === u.team) score -= dmg * (delayed ? 0.8 : 1.5);
       else score += (dmg + (dmg >= occ.hp ? 10 : 0)) * (delayed ? 0.55 : 1);
     }
     const eb = s.bases[otherTeam(u.team)];
-    if (eb.x === c.x && eb.y === c.y) score += rawDamage(def.atq, r.mult, eb.armadura) * 1.6;
+    if (eb.x === c.x && eb.y === c.y) score += rawDamage(atq, r.mult, eb.armadura) * 1.6;
     const ob = s.bases[u.team];
     if (ob.x === c.x && ob.y === c.y) score -= 20;
   }
@@ -133,6 +162,7 @@ function areaScore(s: GameState, u: Unit, from: Pos, x: number, y: number): numb
 
 function actionScore(s: GameState, u: Unit, from: Pos, t: Target): number {
   const def = CLASSES[u.cls];
+  const atq = unitAtq(u) + (u.oil ? OLEO_ATQ : 0);
   switch (t.kind) {
     case 'melee':
       return estimateMelee(s, u, from, getUnit(s, t.unitId));
@@ -140,21 +170,91 @@ function actionScore(s: GameState, u: Unit, from: Pos, t: Target): number {
     case 'tiroBase': {
       const b = s.bases[t.team];
       const mult = t.kind === 'meleeBase' ? BASE_MELEE_MULT : def.ranged!.mult;
-      const dmg = rawDamage(def.atq, mult, b.armadura);
+      const dmg = rawDamage(atq, mult, b.armadura);
       return dmg * 1.6 + (dmg >= b.hp ? 1000 : 0);
     }
     case 'tiro': {
       const target = getUnit(s, t.unitId);
-      const dmg = rangedDamage(s, def.atq, def.ranged!.mult, target);
+      const dmg = rangedDamage(s, atq, def.ranged!.mult, target);
       return dmg * 1.1 + (dmg >= target.hp ? 12 + unitValue(target) : 0);
     }
+    case 'barricada':
+      return 1;
     case 'area':
       return areaScore(s, u, from, t.x, t.y);
     case 'cura': {
       const target = getUnit(s, t.unitId);
-      const missing = CLASSES[target.cls].hp - target.hp;
+      const missing = target.maxHp - target.hp;
       return missing >= 4 ? Math.min(def.heal!.amount, missing) * 1.3 : 0;
     }
+    case 'coleta':
+      return u.items.length >= 2 ? 0 : 3.5 + (u.items.length === 0 ? 1 : 0);
+  }
+}
+
+function nearestEnemyDist(s: GameState, u: Unit, from: Pos): number {
+  const enemies = aliveUnits(s, otherTeam(u.team));
+  return enemies.length ? Math.min(...enemies.map((e) => manhattan(from, e))) : 99;
+}
+
+function itemScore(s: GameState, u: Unit, from: Pos, index: number): number {
+  const item = u.items[index];
+  const near = nearestEnemyDist(s, u, from);
+  if (item === 'tonico') {
+    const missing = u.maxHp - u.hp;
+    return missing >= 8 ? Math.min(TONICO_HEAL, missing) * 1.2 : 0;
+  }
+  if (item === 'oleo') return !u.oil && near <= 6 ? 3 : 0;
+  return !u.focus && near <= 5 ? 2.5 + (CLASSES[u.cls].stamina - u.stamina) * 0.3 : 0;
+}
+
+function abilityScore(s: GameState, u: Unit, from: Pos, t: AbilityTarget): number {
+  const target = t.unitId ? getUnit(s, t.unitId) : null;
+  const atq = unitAtq(u) + (u.oil ? OLEO_ATQ : 0);
+  switch (t.ability) {
+    case 'avanco':
+      return estimateMelee(s, u, t.land!, target!, 1) + 3;
+    case 'investida':
+      return estimateMelee(s, u, from, target!, 1, 2) + 4;
+    case 'tiroCerteiro': {
+      const dmg = rawDamage(atq, 2.0, effectiveArmor(s, target!));
+      return dmg * 1.1 + (dmg >= target!.hp ? 12 + unitValue(target!) : 0);
+    }
+    case 'provocar': {
+      const n = aliveUnits(s, otherTeam(u.team)).filter((e) => manhattan(from, e) <= 2).length;
+      return u.hp > u.maxHp * 0.5 ? n * 3 : 0;
+    }
+    case 'atropelar': {
+      const tgt = target!;
+      const dir = dirFromTo(from, tgt);
+      const nx = tgt.x + DIRS[dir].x;
+      const ny = tgt.y + DIRS[dir].y;
+      const blocked = !inBounds(s, nx, ny) || !Number.isFinite(moveCost(s, tgt, nx, ny)) || !!unitAt(s, nx, ny) || !!baseAt(s, nx, ny);
+      const dmg = rawDamage(atq, 1.0, effectiveArmor(s, tgt)) + (blocked ? RAM_BONUS : 0);
+      return dmg + (dmg >= tgt.hp ? 12 + unitValue(tgt) : 0);
+    }
+    case 'perfurante': {
+      const dmg = rawDamage(atq, 1.5, effectiveArmor(s, target!));
+      return dmg * 1.4;
+    }
+    case 'mina':
+      return aliveUnits(s, otherTeam(u.team)).some((e) => manhattan(e, t) <= 4) ? 1.5 : 0;
+    case 'reparo': {
+      const base = s.bases[u.team];
+      if (base.x === t.x && base.y === t.y) return Math.min(REPAIR_AMOUNT, base.maxHp - base.hp) * 1.5;
+      if (target) return Math.min(REPAIR_AMOUNT, target.maxHp - target.hp) * 1.2;
+      return 0.5;
+    }
+    case 'curaArea': {
+      let total = 0;
+      for (const v of aliveUnits(s, u.team)) if (manhattan(from, v) <= 2) total += Math.min(AREA_HEAL, v.maxHp - v.hp);
+      return total * 1.1;
+    }
+    case 'furtar':
+      return 4;
+    case 'fumaca':
+    case 'barricada':
+      return 0;
   }
 }
 
@@ -179,50 +279,63 @@ function positionScore(s: GameState, u: Unit, c: Pos): number {
   }
 
   // Defender a própria Base se houver inimigo perto dela.
-  const raider = enemies.find((e) => manhattan(e, ownBase) <= 4);
+  const raider = enemies.find((e) => manhattan(e, ownBase) <= 5);
   if (raider && def.melee) score -= manhattan(c, raider) * 0.5;
 
   const armor = CLASSES[u.cls].armadura + TERRAIN[terrainAt(s, c.x, c.y)].armorBonus;
-  const fragility = 1 + (1 - u.hp / def.hp);
+  const fragility = 1 + (1 - u.hp / u.maxHp);
   score -= threatAt(s, u.team, c, armor) * 0.12 * fragility;
   score -= strikeDanger(s, c, armor) * 1.2;
-  const terr = TERRAIN[terrainAt(s, c.x, c.y)];
-  if (terr.cover) score += 0.8;
+  if (TERRAIN[terrainAt(s, c.x, c.y)].cover) score += 0.8;
   if (terrainAt(s, c.x, c.y) === 'colina' && def.ranged) score += 0.6;
   // Encostar na Base inimiga custa a torreta.
   if (manhattan(c, enemyBase) === 1) score -= 3;
   return score;
 }
 
+function pickColor(u: Unit): Exclude<NodeColor, 'prisma'> {
+  if (u.hp < u.maxHp * 0.6) return 'verde';
+  return u.items.includes('oleo') ? 'roxo' : 'laranja';
+}
+
 export function planActivation(s: GameState, team: Team, difficulty: Difficulty): Plan | null {
   const prof = PROFILES[difficulty];
   let best: Plan | null = null;
+  const consider = (plan: Omit<Plan, 'score'>, score: number) => {
+    const total = score + (nextRandom(s) - 0.5) * prof.noise;
+    if (!best || total > best.score) best = { ...plan, score: total };
+  };
   for (const u of aliveUnits(s, team).filter((v) => !v.activated)) {
     const mp = baseMovement(u);
     const canRunNow = u.stamina >= RUN_COST + 2;
     const reach = reachable(s, u, mp + (canRunNow ? RUN_BONUS : 0));
+    const abilityReady = !abilityBlock(s, u) && abilityOf(u).id !== 'fumaca' && abilityOf(u).id !== 'barricada';
     for (const [k, node] of reach) {
       const c = fromKey(s, k);
       if (!canStop(s, u, c.x, c.y)) continue;
       const needsRun = node.cost > mp;
       const moved = c.x !== u.x || c.y !== u.y;
+      const base = { unitId: u.id, run: needsRun, moveTo: moved ? c : null };
       const pos = positionScore(s, u, c) - (needsRun ? 1.5 : 0);
-      const targets = targetsFrom(s, u, c, { moved });
-      // Para alvos em área, avaliar só casas com alguém ou a Base (o resto vale 0).
-      const options: (Target | null)[] = [null];
-      for (const t of targets) {
+      consider({ ...base, action: null }, pos);
+
+      for (const t of targetsFrom(s, u, c, { moved })) {
         if (t.kind === 'area') {
           const near = s.units.some((v) => v.alive && manhattan(v, t) <= 1) || manhattan(s.bases[otherTeam(team)], t) <= 1;
           if (!near) continue;
         }
-        options.push(t);
+        const act = actionScore(s, u, c, t);
+        if (act <= 0) continue;
+        consider({ ...base, action: t, color: t.kind === 'coleta' && t.color === 'prisma' ? pickColor(u) : undefined }, act + pos);
       }
-      for (const t of options) {
-        const act = t ? actionScore(s, u, c, t) : 0;
-        if (t && act <= 0) continue;
-        const score = act + pos + (nextRandom(s) - 0.5) * prof.noise;
-        if (!best || score > best.score) {
-          best = { unitId: u.id, run: needsRun, moveTo: moved ? c : null, action: t, score };
+      u.items.forEach((_, i) => {
+        const sc = itemScore(s, u, c, i);
+        if (sc > 0) consider({ ...base, action: { kind: 'item', index: i } }, sc + pos);
+      });
+      if (abilityReady) {
+        for (const t of abilityTargets(s, u, c, moved)) {
+          const sc = abilityScore(s, u, c, t);
+          if (sc > 0) consider({ ...base, action: { kind: 'habilidade', x: t.x, y: t.y } }, sc + pos);
         }
       }
     }
@@ -356,8 +469,7 @@ export function playTempo(s: GameState, cs: ConfrontoState, choose: Record<SideK
 export function aiChooser(s: GameState, difficulty: Difficulty, memory: LanceMemory | null): LanceChooser {
   return (cs, k, seen) => chooseLance(s, cs, k, seen, difficulty, memory);
 }
-
-// ---------- Execução sem tela (simulação e testes) ----------
+// ---------- Execução ----------
 
 export interface HeadlessOptions {
   difficulty: Record<Team, Difficulty>;
@@ -379,35 +491,59 @@ export function playAiActivation(s: GameState, opts: HeadlessOptions): void {
   });
 }
 
+/** A ação planejada ainda é válida (uma mina pode ter interrompido o movimento)? */
+export function actionStillValid(s: GameState, action: PlannedAction): boolean {
+  if (!action || !s.activation) return false;
+  if (action.kind === 'item') return canUseItem(s, action.index);
+  if (action.kind === 'habilidade') return currentAbilityTargets(s).some((t) => t.x === action.x && t.y === action.y);
+  return currentTargets(s).some((t) => t.kind === action.kind && t.x === action.x && t.y === action.y);
+}
+
+/** Executa só a ação (a parte que não abre Confronto é imediata). Devolve o Confronto, se houver. */
+export function performAction(s: GameState, plan: Plan): ConfrontoState | null {
+  const t = plan.action;
+  if (!t || !actionStillValid(s, t)) return null;
+  switch (t.kind) {
+    case 'melee':
+      return attackMelee(s, t.unitId);
+    case 'meleeBase':
+      attackBaseMelee(s);
+      return null;
+    case 'tiro':
+      attackRanged(s, t.unitId);
+      return null;
+    case 'tiroBase':
+      attackRangedBase(s);
+      return null;
+    case 'barricada':
+      attackBarricade(s, t.x, t.y);
+      return null;
+    case 'area':
+      attackArea(s, t.x, t.y);
+      return null;
+    case 'cura':
+      heal(s, t.unitId);
+      return null;
+    case 'coleta':
+      collect(s, t.x, t.y, plan.color);
+      return null;
+    case 'item':
+      useItem(s, t.index);
+      return null;
+    case 'habilidade':
+      return useAbility(s, t.x, t.y);
+  }
+}
+
 /** Executa um plano; `onConfronto` resolve o Confronto (com tela ou sem). */
 export function executePlan(s: GameState, plan: Plan, onConfronto: (cs: ConfrontoState) => void): void {
   beginActivation(s, plan.unitId);
   if (plan.run) run(s);
   if (plan.moveTo) moveTo(s, plan.moveTo.x, plan.moveTo.y);
-  const t = plan.action;
-  if (t) {
-    switch (t.kind) {
-      case 'melee':
-        onConfronto(attackMelee(s, t.unitId));
-        break;
-      case 'meleeBase':
-        attackBaseMelee(s);
-        break;
-      case 'tiro':
-        attackRanged(s, t.unitId);
-        break;
-      case 'tiroBase':
-        attackRangedBase(s);
-        break;
-      case 'area':
-        attackArea(s, t.x, t.y);
-        break;
-      case 'cura':
-        heal(s, t.unitId);
-        break;
-    }
-  }
   if (s.winner) return;
+  const cs = getUnit(s, plan.unitId).alive ? performAction(s, plan) : null;
+  if (cs) onConfronto(cs);
+  if (s.winner || !s.activation) return;
   faceNearestEnemy(s, plan.unitId);
   endActivation(s);
 }
