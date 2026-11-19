@@ -264,7 +264,7 @@ select {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10;
+  z-index: 1000;
 }
 .modal {
   width: min(720px, 94vw);
@@ -777,4 +777,21 @@ canvas#board.panning {
   object-fit: contain;
   object-position: right bottom;
   margin: -2px -2px 0 6px;
+}
+
+/* Palco do Confronto (pixel art ampliada). */
+.duel-stage {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 228 / 84;
+  image-rendering: pixelated;
+  border-radius: 6px;
+  border: 1px solid var(--brass);
+  margin-bottom: 10px;
+  background: #1a1418;
+}
+.modal {
+  max-height: 96vh;
+  overflow-y: auto;
 }

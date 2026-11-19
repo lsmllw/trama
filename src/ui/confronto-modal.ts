@@ -19,6 +19,7 @@ import {
 } from '../core';
 import type { ConfrontoState, Difficulty, GameState, Lance, LanceMemory, SideKey } from '../core';
 import { clear, h } from './dom';
+import { DuelStage } from './duel-stage';
 
 export interface ConfrontoContext {
   s: GameState;
@@ -45,6 +46,7 @@ export function openConfronto(ctx: ConfrontoContext): Promise<void> {
   let aiChoice: Lance | null = null;
   let notice = '';
   let last: { atk: Lance; def: Lance } | null = null;
+  const stage = new DuelStage(s, cs, playerSide);
 
   const prepareTempo = () => {
     aiChoice = null;
@@ -67,6 +69,8 @@ export function openConfronto(ctx: ConfrontoContext): Promise<void> {
 
   return new Promise<void>((resolve) => {
     const close = () => {
+      if (stage.busy) return;
+      stage.destroy();
       finishConfronto(s, cs);
       bg.remove();
       document.removeEventListener('keydown', onKey);
@@ -74,7 +78,7 @@ export function openConfronto(ctx: ConfrontoContext): Promise<void> {
     };
 
     const play = (mine: Lance) => {
-      if (cs.done) return;
+      if (cs.done || stage.busy) return;
       if (mine !== 'esperar' && !canSpend(s, cs, playerSide)) return;
       if (order === 'jogadorPrimeiro') aiChoice = chooseLance(s, cs, aiSide, mine, difficulty, memory);
       else if (aiChoice === null) aiChoice = chooseLance(s, cs, aiSide, null, difficulty, memory);
@@ -82,19 +86,24 @@ export function openConfronto(ctx: ConfrontoContext): Promise<void> {
       const atk = playerSide === 'atk' ? mine : aiChoice;
       const def = playerSide === 'def' ? mine : aiChoice;
       const r = resolveTempo(s, cs, atk, def);
-      last = { atk: r.atk, def: r.def };
-      ctx.onTempo();
-      if (!cs.done) {
-        const keep = last;
-        prepareTempo();
-        last = keep;
-      } else {
-        notice = 'Fim do Confronto.';
-      }
-      render();
+      // Enquanto os dois lutam no palco, os botões ficam travados; o placar muda no fim.
+      box.querySelectorAll<HTMLButtonElement>('.lance-buttons button').forEach((b) => (b.disabled = true));
+      stage.play(r, () => {
+        last = { atk: r.atk, def: r.def };
+        ctx.onTempo();
+        if (!cs.done) {
+          const keep = last;
+          prepareTempo();
+          last = keep;
+        } else {
+          notice = 'Fim do Confronto.';
+        }
+        render();
+      });
     };
 
     const read = () => {
+      if (stage.busy) return;
       if (order !== 'simultaneo' || !useRead(cs, playerSide)) return;
       aiChoice = chooseLance(s, cs, aiSide, null, difficulty, memory);
       order = 'iaRevelada';
@@ -145,7 +154,8 @@ export function openConfronto(ctx: ConfrontoContext): Promise<void> {
 
       box.append(
         h('h2', {}, h('span', {}, 'Confronto'), h('span', { class: 'sub', style: 'font-size:13px;color:var(--muted)' }, `ataque pelo ${cs.side}`)),
-        h('div', { class: 'duel' }, fighter('atk'), h('div', { class: 'vs' }, '×'), fighter('def')),
+        stage.el,
+        h('div', { class: 'duel' }, fighter(playerSide), h('div', { class: 'vs' }, '×'), fighter(aiSide)),
         h('div', { class: 'tempo-track' }, track),
         h('div', { class: 'notice' }, notice),
         cs.done

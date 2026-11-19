@@ -525,6 +525,7 @@ export class GameView {
 
   private async resolveConfronto(cs: ConfrontoState): Promise<void> {
     const atk = sideUnit(this.s, cs, 'atk');
+    this.hideTip();
     await openConfronto({
       s: this.s,
       cs,

@@ -32,6 +32,7 @@ npm run tune                   # compara variações de números (edite scripts/
   - O alcance de cada classe continua: Atirador e artilharia não atacam colados, o Canhão não atira depois de andar.
 - **Prévia de dano:** ao escolher onde andar, uma etiqueta sobre cada inimigo atacável mostra o dano que você causaria daquela casa e por qual lado (corpo a corpo: por acerto ×1 no Confronto; tiro e Base: dano exato). Parado sobre o alvo, a dica embaixo do tabuleiro detalha.
   - Quem perde para uma Finta fica **Exposto**: no tempo seguinte, escolhe primeiro e o outro vê.
+  - **Palco do Confronto:** acima das barras de vida, os dois sprites lutam frente a frente, cada um diante da arte do terreno onde está (planície, floresta, colina, ruína, lama, ponte ou Fonte). Cada classe de corpo a corpo tem o seu golpe (corte do Espadachim, escudo do Tank, carga do Cavaleiro, tiro à queima-roupa do Blindado, chave do Mecânico, marretada do Construtor, seringa do Médico, sumiço e adaga do Espião); Guarda ergue um escudo, Finta finge e salta para trás, Esperar se encolhe. Quem é atingido pisca e é empurrado; quem morre tomba.
 - **Prontidão (!):** quem não agiu na ativação ganha +1 lance ao defender.
 - **Stamina** (barra amarela): lances, Correr e Cura gastam; volta 3 por rodada. Com 0, a unidade fica Exausta.
 - **Morteiro:** marca uma cruz de 5 casas e o disparo cai no começo da próxima fase de quem atirou (o inimigo tem a fase dele para sair). **Granada:** explode na hora. Os dois atingem aliados.
@@ -75,7 +76,7 @@ src/core/      regras puras, sem tela (determinísticas, com semente)
   game.ts        criação da partida, fases, ações, coleta, itens, fim de rodada
   abilities.ts   as 12 habilidades de classe
   ai.ts          IA de utilidade (inclui itens e habilidades) + IA de lances + simulação
-src/ui/        canvas 2.5D com câmera e fundo (renderer.ts), sprites em pixel art (sprites.ts), símbolos das classes (icons.ts), painéis,
+src/ui/        canvas 2.5D com câmera e fundo (renderer.ts), sprites em pixel art (sprites.ts), palco do Confronto (duel-stage.ts), símbolos das classes (icons.ts), painéis,
                barra de unidades, janela do Confronto, seleção de time
 tools/         genmap.py: gera e confere o mapa (simetria, caminhos, casas iniciais)
 tests/         testes das regras (Vitest)

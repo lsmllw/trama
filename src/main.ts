@@ -1,5 +1,6 @@
 import './ui/style.css';
 import * as core from './core';
+import { openConfronto } from './ui/confronto-modal';
 import { GameView } from './ui/game-view';
 import { randomComp, showSetup } from './ui/setup';
 import type { MatchConfig } from './ui/setup';
@@ -25,6 +26,7 @@ showSetup(root, null, start);
 // Ganchos de depuração (testes automatizados no navegador e console).
 (window as unknown as { __debug: unknown }).__debug = {
   core,
+  openConfronto,
   get view() {
     return view;
   },
