@@ -229,8 +229,28 @@ export class GameView {
     const s = this.s;
     const a = s.activation;
     const start = this.hover ?? (a ? getUnit(s, a.unitId) : s.bases[PLAYER]);
-    const x = Math.max(0, Math.min(s.width - 1, start.x + dx));
-    const y = Math.max(0, Math.min(s.height - 1, start.y + dy));
+    let x = Math.max(0, Math.min(s.width - 1, start.x + dx));
+    let y = Math.max(0, Math.min(s.height - 1, start.y + dy));
+    const allowed = this.cursorCells();
+    if (allowed) {
+      // Só casas válidas: a mais próxima na direção da seta, preferindo seguir reto.
+      let best: Pos | null = null;
+      let bestScore = Infinity;
+      for (const c of allowed) {
+        const along = (c.x - start.x) * dx + (c.y - start.y) * dy;
+        if (along <= 0) continue;
+        const across = Math.abs((c.x - start.x) * dy) + Math.abs((c.y - start.y) * dx);
+        if (across > along) continue; // fora do cone da direção
+        const score = along + across * 2;
+        if (score < bestScore) {
+          bestScore = score;
+          best = c;
+        }
+      }
+      if (!best) return;
+      x = best.x;
+      y = best.y;
+    }
     this.hover = { x, y };
     this.hoverByMouse = false;
     this.kbCursor = true;
@@ -246,6 +266,23 @@ export class GameView {
       this.hideTip();
     }
     this.refreshHighlights();
+  }
+
+  /**
+   * Casas onde o cursor do teclado pode parar com uma unidade ativa: as do modo atual (movimento e
+   * alvos, mira ou habilidade) e a própria unidade. null = cursor livre (sem unidade ativa).
+   */
+  private cursorCells(): Pos[] | null {
+    const s = this.s;
+    const a = s.activation;
+    if (!a || !this.isPlayerTurn() || this.busy) return null;
+    const u = getUnit(s, a.unitId);
+    const hl = this.hl;
+    const cells: Pos[] = [{ x: u.x, y: u.y }];
+    if (this.mode === 'mirar') cells.push(...hl.areaRange);
+    else if (this.mode === 'habilidade') cells.push(...hl.abilityTargets, ...hl.areaRange);
+    else cells.push(...hl.moves, ...currentTargets(s).filter((t) => t.kind !== 'area'));
+    return cells;
   }
 
   /** Espaço: confirma a casa do cursor, como um clique. Na própria unidade ativa, encerra a unidade. */
