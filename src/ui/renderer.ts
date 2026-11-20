@@ -2,7 +2,7 @@
 // chibi e a bola. Toda jogada vira uma animação (fila de eventos) antes do jogo seguir.
 
 import { AREA_RADIUS, COURT_H, COURT_W, TEN_METER, getPlayer } from '../core';
-import type { Corner, Emote, GameEvent, GameState, Player, Pos, Team } from '../core';
+import type { Corner, Emote, GameEvent, GameState, Lance, Player, Pos, SideKey, Team, TempoResult } from '../core';
 import { BALL, playerSprite, whiteSprite } from './sprites';
 import type { Frame } from './sprites';
 
@@ -80,6 +80,8 @@ interface Disp {
   /** Olhar para a esquerda da tela. */
   flip: boolean | null;
   back: boolean | null;
+  /** Imagens fantasmas (finta), em casas relativas ao jogador. */
+  ghosts: { dx: number; dy: number }[];
 }
 
 interface BallDisp {
@@ -132,7 +134,25 @@ interface Float {
   text: string;
   color: string;
   t0: number;
+  /** Coordenadas já no centro do jogador (sem o +0,5 da casa) e altura própria. */
+  raw?: boolean;
+  h?: number;
+  size?: number;
+  life?: number;
 }
+
+/** Estado do Duelo na quadra: foco da câmera, vinheta e efeitos de início. */
+interface DuelFx {
+  a: string;
+  b: string;
+  t0: number;
+  end: number | null;
+  prev: { z: number; lockId: string | null; held: { tx: number; ty: number } | null };
+}
+
+const DUEL_ZOOM = 2.35;
+const LANCE_COLOR: Record<Lance, string> = { golpe: '#ff9a6a', guarda: '#8fc4ff', finta: '#d2a8ff', esperar: '#e0e0e6' };
+const ease = (p: number) => (p <= 0 ? 0 : p >= 1 ? 1 : p * p * (3 - 2 * p));
 
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
@@ -173,6 +193,8 @@ export class Renderer {
     row: number;
   }[] = [];
   private cheer = 0;
+  private duelFx: DuelFx | null = null;
+  private flashT = 0;
 
   constructor(
     readonly canvas: HTMLCanvasElement,
@@ -208,6 +230,7 @@ export class Renderer {
       dizzy: false,
       flip: null,
       back: null,
+      ghosts: [],
     };
   }
 
@@ -831,10 +854,289 @@ export class Renderer {
       d.rot *= 0.8;
       if (Math.abs(d.rot) < 0.01) d.rot = 0;
       d.h *= 0.7;
-      if (!p.unbalanced) d.dizzy = false;
-      else d.dizzy = true;
+      if (p.unbalanced) d.dizzy = true;
+      else if (!this.duelActive) d.dizzy = false;
     }
     if (this.ball.owner !== s.holder) this.ball.owner = s.holder;
+  }
+
+  // ---------- Duelo na quadra ----------
+
+  get duelActive(): boolean {
+    return !!this.duelFx && !this.duelFx.end;
+  }
+
+  /** Começo do Duelo: clarão, linhas de velocidade, os dois se encaram e a câmera fecha neles. */
+  startDuel(aId: string, bId: string, title: string, sub: string): Promise<void> {
+    const now = performance.now();
+    this.duelFx = { a: aId, b: bId, t0: now, end: null, prev: { z: this.zTarget, lockId: this.lockId, held: this.held } };
+    this.flashT = now;
+    this.shake = Math.max(this.shake, 5);
+    const a = this.d(aId);
+    const b = this.d(bId);
+    this.burst((a.x + b.x) / 2, (a.y + b.y) / 2, 16, '#ffe14d', 9);
+    this.banners.push({ text: title, sub, color: '#ffe14d', t0: now, dur: 1000, big: false });
+    return new Promise((resolve) => {
+      this.queue.push(() => [
+        {
+          dur: 560,
+          t0: 0,
+          step: (t) => {
+            this.faceTowards(a, b.x - a.x, b.y - a.y);
+            this.faceTowards(b, a.x - b.x, a.y - b.y);
+            const k = Math.sin(Math.PI * Math.min(1, t * 1.5));
+            a.h = k * 8;
+            b.h = k * 8;
+            a.frame = t < 0.66 ? 'run1' : null;
+            b.frame = t < 0.66 ? 'run2' : null;
+          },
+          end: () => {
+            a.h = 0;
+            b.h = 0;
+            a.frame = null;
+            b.frame = null;
+            resolve();
+          },
+        },
+      ]);
+    });
+  }
+
+  /** Um tempo do Duelo animado ali mesmo, na quadra. */
+  duelTempo(r: TempoResult, atkId: string, defId: string, ball: SideKey, names: { atk: string; def: string }): Promise<void> {
+    return new Promise((resolve) => {
+      this.queue.push(() => [this.animTempo(r, atkId, defId, ball, names, resolve)]);
+    });
+  }
+
+  /** Faixa com o resultado do Duelo. */
+  duelResult(text: string, color: string): void {
+    this.banners.push({ text, color, t0: performance.now(), dur: 1100, big: false });
+    this.shake = Math.max(this.shake, 3);
+  }
+
+  /** Fim do Duelo: a câmera volta para onde estava. */
+  endDuel(): void {
+    const fx = this.duelFx;
+    if (!fx || fx.end) return;
+    fx.end = performance.now();
+    this.zTarget = fx.prev.z;
+    this.lockId = fx.prev.lockId;
+    this.held = fx.prev.held;
+    for (const id of [fx.a, fx.b]) {
+      const d = this.disp.get(id);
+      if (d) d.ghosts = [];
+    }
+  }
+
+  /** Posição de um jogador na tela (coordenadas do cliente), para encaixar menus ao lado dele. */
+  playerScreen(id: string, hgt = 0): Pt {
+    const d = this.disp.get(id)!;
+    const w = this.P(d.x, d.y, hgt);
+    const p = { x: w.x * this.cam.z + this.cam.tx, y: w.y * this.cam.z + this.cam.ty };
+    const r = this.canvas.getBoundingClientRect();
+    return { x: r.left + (p.x / this.canvas.width) * r.width, y: r.top + (p.y / this.canvas.height) * r.height };
+  }
+
+  private animTempo(r: TempoResult, atkId: string, defId: string, ball: SideKey, names: { atk: string; def: string }, done: () => void): Anim {
+    const A = this.d(atkId);
+    const D = this.d(defId);
+    let ux = D.x - A.x;
+    let uy = D.y - A.y;
+    const n = Math.hypot(ux, uy) || 1;
+    ux /= n;
+    uy /= n;
+    const px = -uy;
+    const py = ux;
+    const sides = [
+      { k: 'atk' as SideKey, d: A, b: { x: A.x, y: A.y }, s: 1, l: r.atk, gain: r.atkGain, other: r.defGain },
+      { k: 'def' as SideKey, d: D, b: { x: D.x, y: D.y }, s: -1, l: r.def, gain: r.defGain, other: r.atkGain },
+    ];
+    const holder = ball === 'atk' ? sides[0] : sides[1];
+    const marker = ball === 'atk' ? sides[1] : sides[0];
+    const now = performance.now();
+    for (const sd of sides) {
+      sd.d.dizzy = false;
+      this.floats.push({ x: sd.b.x, y: sd.b.y, raw: true, h: 54, text: names[sd.k], color: LANCE_COLOR[sd.l], t0: now, size: 13, life: 1150 });
+    }
+    let hit = false;
+    return {
+      dur: 1000,
+      t0: 0,
+      step: (t) => {
+        const c = Math.min(1, t / 0.45);
+        const back = t > 0.55 ? 1 - (t - 0.55) / 0.45 : 1;
+        const e = ease(c) * back;
+        for (const sd of sides) {
+          const X = sd.d;
+          const hasBall = sd === holder;
+          let fwd = 0;
+          let lat = 0;
+          X.ghosts = [];
+          X.frame = null;
+          X.h = 0;
+          X.rot = 0;
+          X.flash = false;
+          this.faceTowards(X, ux * sd.s, uy * sd.s);
+          switch (sd.l) {
+            case 'golpe':
+              // Arrancada com a bola ou bote: avança com rastro.
+              fwd = (hasBall ? 0.32 : 0.44) * e;
+              X.frame = hasBall ? (Math.floor(t * 10) % 2 ? 'run1' : 'run2') : t < 0.55 ? 'kick' : null;
+              if (!hasBall) X.h = Math.sin(Math.PI * Math.min(1, t * 1.6)) * 5;
+              if (t < 0.45)
+                X.ghosts = [
+                  { dx: -ux * sd.s * 0.13, dy: -uy * sd.s * 0.13 },
+                  { dx: -ux * sd.s * 0.26, dy: -uy * sd.s * 0.26 },
+                ];
+              break;
+            case 'guarda':
+              // Proteger: vira de costas para o marcador. Fechar: abre os braços.
+              fwd = -0.1 * e;
+              if (hasBall) this.faceTowards(X, -ux * sd.s, -uy * sd.s);
+              else X.frame = 'arms';
+              break;
+            case 'finta':
+              lat = Math.sin(t * Math.PI * (hasBall ? 4 : 1.6)) * (hasBall ? 0.22 : 0.3) * (1 - t * 0.6);
+              X.h = Math.abs(Math.sin(t * Math.PI * 3)) * (hasBall ? 3 : 1.5);
+              X.frame = Math.floor(t * 8) % 2 ? 'run1' : null;
+              if (t < 0.7)
+                X.ghosts = [
+                  { dx: px * 0.17, dy: py * 0.17 },
+                  { dx: -px * 0.17, dy: -py * 0.17 },
+                ];
+              break;
+            default:
+              fwd = hasBall ? 0 : -0.12 * e;
+              lat = Math.sin(t * Math.PI * 2) * 0.03;
+          }
+          X.x = sd.b.x + ux * sd.s * fwd + px * lat;
+          X.y = sd.b.y + uy * sd.s * fwd + py * lat;
+          if (sd.other > sd.gain && t > 0.42 && t < 0.62) X.flash = Math.floor(t * 30) % 2 === 0;
+          if (r.exposed === sd.k && t > 0.45) {
+            X.rot = 0.3 * Math.sin((t - 0.45) * Math.PI * 4) * (1 - t);
+            X.dizzy = true;
+          }
+          if (r.foul && hasBall && t > 0.4) {
+            X.rot = -1.1 * Math.min(1, (t - 0.4) * 3) * (X.flip ? -1 : 1);
+            X.h = 2;
+          }
+        }
+        // A bola acompanha quem a tem: à frente, atrás do corpo (proteger) ou passando de um pé para o outro (finta).
+        let bf = 0.3;
+        let bl = 0;
+        let bh = 0;
+        if (holder.l === 'guarda') bf = -0.3;
+        if (holder.l === 'finta') bl = Math.sin(t * Math.PI * 6) * 0.22;
+        if (holder.l === 'esperar') bl = Math.sin(t * Math.PI * 2) * 0.08;
+        if (holder.l === 'golpe') bf += 0.15 * Math.sin(Math.PI * Math.min(1, t * 2));
+        if (marker.gain > holder.gain && t > 0.45 && t < 0.85) {
+          const q = Math.sin(((t - 0.45) / 0.4) * Math.PI);
+          bf += 0.5 * q;
+          bh = 9 * q;
+        }
+        this.ball.owner = null;
+        this.ball.x = holder.d.x + ux * holder.s * bf + px * bl;
+        this.ball.y = holder.d.y + uy * holder.s * bf + py * bl + 0.05;
+        this.ball.h = bh + Math.abs(Math.sin(t * Math.PI * 4)) * 1.5;
+        this.ball.spin += 0.4;
+        if (!hit && t >= 0.45) {
+          hit = true;
+          const mx = (A.x + D.x) / 2;
+          const my = (A.y + D.y) / 2;
+          const at = performance.now();
+          if (r.foul) {
+            this.burst(mx, my, 18, '#ffe14d', 11);
+            this.shake = 6;
+            this.banners.push({ text: 'FALTA!', color: '#ffe14d', t0: at, dur: 900, big: false });
+          } else if (r.atkGain !== r.defGain) {
+            this.burst(mx, my, 12, '#ffffff', 9);
+            this.shake = 3.5;
+          } else {
+            // Ninguém ganhou: só um vento entre os dois.
+            for (let i = 0; i < 7; i++)
+              this.particles.push({
+                x: mx - px * 0.3,
+                y: my - py * 0.3,
+                vx: px * (1.5 + i * 0.2),
+                vy: py * (1.5 + i * 0.2),
+                life: 450,
+                t0: at,
+                color: 'rgba(255,255,255,0.85)',
+                size: 2,
+                g: 0,
+              });
+          }
+          for (const sd of sides)
+            if (sd.gain > 0) this.floats.push({ x: sd.b.x, y: sd.b.y, raw: true, h: 46, text: `+${sd.gain}`, color: '#ffe14d', t0: at, size: 19, life: 900 });
+        }
+      },
+      end: () => {
+        for (const sd of sides) {
+          sd.d.x = sd.b.x;
+          sd.d.y = sd.b.y;
+          sd.d.ghosts = [];
+          sd.d.frame = null;
+          sd.d.flash = false;
+          sd.d.h = 0;
+          if (!(r.foul && sd === holder)) sd.d.rot = 0;
+          sd.d.dizzy = r.exposed === sd.k;
+        }
+        this.ball.owner = holder.d === A ? atkId : defId;
+        done();
+      },
+    };
+  }
+
+  /** Vinheta, faixas de cinema, clarão e linhas de velocidade do Duelo (em coordenadas de tela). */
+  private drawDuelOverlay(now: number): void {
+    const ctx = this.ctx;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    if (this.flashT && now - this.flashT < 220) {
+      ctx.fillStyle = `rgba(255,255,255,${(0.55 * (1 - (now - this.flashT) / 220)).toFixed(3)})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    const fx = this.duelFx;
+    if (!fx) return;
+    let amt = Math.min(1, (now - fx.t0) / 250);
+    if (fx.end) {
+      amt *= Math.max(0, 1 - (now - fx.end) / 380);
+      if (amt <= 0) {
+        this.duelFx = null;
+        return;
+      }
+    }
+    const a = this.d(fx.a);
+    const b = this.d(fx.b);
+    const w = this.P((a.x + b.x) / 2, (a.y + b.y) / 2, 20);
+    const cx = w.x * this.cam.z + this.cam.tx;
+    const cy = w.y * this.cam.z + this.cam.ty;
+    const g = ctx.createRadialGradient(cx, cy, Math.min(W, H) * 0.2, cx, cy, Math.max(W, H) * 0.75);
+    g.addColorStop(0, 'rgba(8,6,20,0)');
+    g.addColorStop(1, `rgba(8,6,20,${(0.75 * amt).toFixed(3)})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    const st = (now - fx.t0) / 480;
+    if (!fx.end && st < 1) {
+      ctx.save();
+      ctx.strokeStyle = `rgba(255,255,255,${(0.6 * (1 - st)).toFixed(3)})`;
+      for (let i = 0; i < 40; i++) {
+        const ang = i * 2.39996;
+        const r0 = Math.max(W, H) * (0.7 - 0.42 * ease(st)) + (i % 7) * 12;
+        const len = 40 + (i % 5) * 22;
+        ctx.lineWidth = 1 + (i % 3);
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(ang) * r0, cy + Math.sin(ang) * r0);
+        ctx.lineTo(cx + Math.cos(ang) * (r0 + len), cy + Math.sin(ang) * (r0 + len));
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    const bar = H * 0.065 * amt;
+    ctx.fillStyle = 'rgba(0,0,0,0.88)';
+    ctx.fillRect(0, 0, W, bar);
+    ctx.fillRect(0, H - bar, W, bar);
   }
 
   // ---------- Câmera ----------
@@ -862,6 +1164,7 @@ export class Renderer {
   }
 
   zoomAt(clientX: number, clientY: number, factor: number): void {
+    if (this.duelFx && !this.duelFx.end) return;
     const zOld = this.zTarget;
     this.zTarget = Math.min(MAX_ZOOM, Math.max(1, this.zTarget * factor));
     if (this.held) {
@@ -936,10 +1239,18 @@ export class Renderer {
     this.lastNow = now;
     const W = this.canvas.width;
     const H = this.canvas.height;
-    const zNext = this.cam.z + (this.zTarget - this.cam.z) * (1 - Math.exp(-dt / 90));
+    const duel = this.duelFx && !this.duelFx.end ? this.duelFx : null;
+    const zGoal = duel ? DUEL_ZOOM : this.zTarget;
+    const zNext = this.cam.z + (zGoal - this.cam.z) * (1 - Math.exp(-dt / (duel ? 55 : 90)));
     const locked = this.lockId ? this.disp.get(this.lockId) : undefined;
     let want: { tx: number; ty: number };
-    if (this.held) {
+    if (duel) {
+      // Zoom rápido no meio dos dois, um pouco acima dos pés.
+      const a = this.d(duel.a);
+      const b = this.d(duel.b);
+      const w = this.P((a.x + b.x) / 2, (a.y + b.y) / 2, 22);
+      want = { tx: W / 2 - w.x * zNext, ty: H / 2 - w.y * zNext };
+    } else if (this.held) {
       const k = zNext / this.zTarget;
       want = {
         tx: W / 2 - (W / 2 - this.held.tx) * k,
@@ -960,7 +1271,7 @@ export class Renderer {
         ty: (H - H * zNext) * this.follow.y + fade * (0.5 - this.follow.y) * PARALLAX.y,
       };
     }
-    const m = 1 - Math.exp(-dt / (locked ? 110 : 60));
+    const m = 1 - Math.exp(-dt / (duel ? 45 : locked ? 110 : 60));
     this.cam = {
       z: zNext,
       tx: this.cam.tx + (want.tx - this.cam.tx) * m,
@@ -989,6 +1300,7 @@ export class Renderer {
     this.drawBalloons(now);
     this.drawFloats(now);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.drawDuelOverlay(now);
     this.drawBanners(now);
   }
 
@@ -1319,7 +1631,8 @@ export class Renderer {
     ctx.stroke();
     ctx.restore();
     const activeTeamTurn = s.activeTeam === p.team && !s.over;
-    const dim = activeTeamTurn && p.activated;
+    const inDuel = !!this.duelFx && !this.duelFx.end && (this.duelFx.a === p.id || this.duelFx.b === p.id);
+    const dim = activeTeamTurn && p.activated && !inDuel;
     // Vista e lado: de frente quando desce na tela, de costas quando sobe.
     const toward = s.holder === p.id ? (p.team === 'azul' ? 'E' : 'W') : p.facing;
     const facingBack = d.back ?? (toward === 'E' || toward === 'N');
@@ -1329,6 +1642,15 @@ export class Renderer {
     const spr = playerSprite(p, frame, facingBack ? 'back' : 'front');
     const sw = spr.width * SCALE;
     const sh = spr.height * SCALE;
+    for (const [i, gh] of d.ghosts.entries()) {
+      const gp = this.P(d.x + gh.dx, d.y + gh.dy);
+      ctx.save();
+      ctx.globalAlpha = 0.32 - i * 0.08;
+      ctx.translate(gp.x, gp.y - d.h - idleBob);
+      if (facingLeft) ctx.scale(-1, 1);
+      ctx.drawImage(spr, -sw / 2, -sh + 2, sw, sh);
+      ctx.restore();
+    }
     ctx.save();
     ctx.globalAlpha = dim ? 0.62 : 1;
     ctx.translate(g.x, g.y - d.h - idleBob);
@@ -1350,7 +1672,8 @@ export class Renderer {
         ctx.fillRect(sp.x - 0.5, sp.y - 1.5, 1, 3);
       }
     }
-    // Nome e barras de fôlego e habilidade.
+    // Nome (escondido no Duelo, que já mostra os dois no topo).
+    if (this.duelActive) return;
     const top = g.y - sh - d.h - 6;
     ctx.font = 'bold 9px system-ui, sans-serif';
     ctx.textAlign = 'center';
@@ -1512,14 +1835,17 @@ export class Renderer {
 
   private drawFloats(now: number): void {
     const ctx = this.ctx;
-    this.floats = this.floats.filter((f) => now - f.t0 < 1000);
+    this.floats = this.floats.filter((f) => now - f.t0 < (f.life ?? 1000));
     for (const f of this.floats) {
-      const t = (now - f.t0) / 1000;
-      const p = this.P(f.x + 0.5, f.y + 0.5, 50 + t * 20);
-      ctx.globalAlpha = 1 - t;
-      ctx.font = 'bold 12px system-ui, sans-serif';
+      const t = (now - f.t0) / (f.life ?? 1000);
+      const p = f.raw ? this.P(f.x, f.y, (f.h ?? 50) + t * 14) : this.P(f.x + 0.5, f.y + 0.5, 50 + t * 20);
+      const pop = t < 0.12 ? 0.6 + (t / 0.12) * 0.4 : 1;
+      ctx.globalAlpha = t > 0.7 ? (1 - t) / 0.3 : 1;
+      // Texto com tamanho parecido na tela, com ou sem zoom.
+      const size = ((f.size ?? 12) * pop * 1.5) / Math.max(1.5, this.cam.z);
+      ctx.font = `900 ${size.toFixed(1)}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = size / 4;
       ctx.strokeStyle = '#1a1418';
       ctx.strokeText(f.text, p.x, p.y);
       ctx.fillStyle = f.color;

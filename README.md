@@ -51,4 +51,5 @@ npm run sim -- 200 veterano   # partidas IA × IA, com estatísticas
 - **1–5** ou **Tab**: escolher jogador · **clique / Espaço**: andar, passar, driblar, desarmar
 - **C** chutar · **B** bomba · **A** passe alto · **R** arrancada · **H** especial
 - **Z** terminar jogador · **E** encerrar fase · **X** desfazer / voltar · roda do mouse = zoom · **0** centraliza
-- No Duelo: **1–4** lances, **L** leitura. No chute: **1–3** canto.
+- **Duelo na quadra:** a câmera fecha nos dois e os lances aparecem ao lado do seu jogador: **1–4** ou **↑↓ + Espaço**, **L** leitura. No chute: **1–3** canto.
+- Quando o último jogador do time anda e não tem mais o que fazer, a fase passa sozinha para o adversário.

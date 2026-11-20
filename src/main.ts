@@ -1,6 +1,5 @@
 import './ui/style.css';
 import * as core from './core';
-import { openDuel } from './ui/duel-modal';
 import { GameView } from './ui/game-view';
 import type { MatchConfig } from './ui/game-view';
 import { showSetup } from './ui/setup';
@@ -26,7 +25,6 @@ showSetup(root, null, start);
 // Ganchos de depuração (testes automatizados no navegador e console).
 (window as unknown as { __debug: unknown }).__debug = {
   core,
-  openDuel,
   get view() {
     return view;
   },

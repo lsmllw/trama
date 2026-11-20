@@ -46,7 +46,7 @@ import {
 } from '../core';
 import type { Corner, Difficulty, DuelState, GameState, LanceMemory, Player, Pos, Target, Team } from '../core';
 import { clear, h } from './dom';
-import { openDuel } from './duel-modal';
+import { runInlineDuel } from './duel-inline';
 import { emptyHighlights, Renderer } from './renderer';
 import type { Highlights, TargetMark } from './renderer';
 import { chooseShotCorner } from './shot-modal';
@@ -78,9 +78,11 @@ export class GameView {
   private hoverByMouse = false;
   private kbCursor = false;
   private ended = false;
+  private inDuel = false;
   private el = {
     top: h('div', { class: 'scoreboard' }),
     canvas: h('canvas', { class: 'board' }),
+    wrap: h('div', { class: 'board-wrap' }),
     hint: h('div', { class: 'hint' }),
     side: h('div', { class: 'side' }),
     log: h('div', { class: 'log' }),
@@ -112,15 +114,8 @@ export class GameView {
 
   mount(): void {
     clear(this.root);
-    this.root.append(
-      this.el.top,
-      h(
-        'div',
-        { class: 'layout' },
-        h('div', { class: 'board-wrap' }, this.el.canvas, this.el.hint),
-        h('div', { class: 'side-wrap' }, this.el.side, this.el.log),
-      ),
-    );
+    this.root.append(this.el.top, h('div', { class: 'layout' }, this.el.wrap, h('div', { class: 'side-wrap' }, this.el.side, this.el.log)));
+    this.el.wrap.append(this.el.canvas, this.el.hint);
     this.renderer = new Renderer(this.el.canvas, this.s);
     const c = this.el.canvas;
     c.addEventListener('click', (e) => {
@@ -223,6 +218,10 @@ export class GameView {
       if (a && a.acted && !canAct(this.s)) {
         endActivation(this.s);
         this.afterUnit();
+      } else if (a && a.moved && !a.acted && this.lastWithNothingLeft()) {
+        // O último jogador do time andou e não tem mais o que fazer: a fase acaba sozinha.
+        endActivation(this.s);
+        this.afterUnit();
       } else if (a && !this.s.over && getPlayer(this.s, a.playerId).team !== PLAYER) {
         this.selectedId = null;
       }
@@ -245,6 +244,16 @@ export class GameView {
     if (next && this.isPlayerTurn()) this.hover = { x: next.x, y: next.y };
   }
 
+  /** O jogador em ação é o último livre do seu time e, depois de andar, não tem passe, chute, drible, desarme nem Muralha. */
+  private lastWithNothingLeft(): boolean {
+    const s = this.s;
+    const a = s.activation;
+    if (!a || !this.isPlayerTurn() || getPlayer(s, a.playerId).team !== PLAYER) return false;
+    if (!activatable(s).every((p) => p.id === a.playerId)) return false;
+    // A Muralha do goleiro ainda vale na defesa; a Pedalada sem bola nem drible por perto não muda nada.
+    return this.cellTargets().length === 0 && !this.shotTarget(false) && !this.shotTarget(true) && canUseSpecial(s) !== 'muralha';
+  }
+
   private nextFree(): Player | undefined {
     return activatable(this.s).find((p) => p.team === PLAYER);
   }
@@ -253,16 +262,28 @@ export class GameView {
     this.flush();
     await this.renderer.idle();
     const atk = sidePlayer(this.s, cs, 'atk');
-    await openDuel({
-      s: this.s,
-      cs,
-      playerSide: atk.team === PLAYER ? 'atk' : 'def',
-      difficulty: this.config.difficulty,
-      memory: this.memory,
-    });
-    applyDuel(this.s, cs);
-    this.flush();
-    await this.renderer.idle();
+    this.inDuel = true;
+    this.hl = emptyHighlights();
+    this.el.hint.textContent = 'Duelo! 1–4 ou ↑↓ + Espaço escolhem o lance · L usa uma Leitura';
+    try {
+      // O Duelo acontece na própria quadra: zoom nos dois e o menu ao lado do seu jogador.
+      await runInlineDuel({
+        s: this.s,
+        cs,
+        playerSide: atk.team === PLAYER ? 'atk' : 'def',
+        difficulty: this.config.difficulty,
+        memory: this.memory,
+        renderer: this.renderer,
+        host: this.el.wrap,
+      });
+      applyDuel(this.s, cs);
+      this.flush();
+      await this.renderer.idle();
+    } finally {
+      this.renderer.endDuel();
+      this.inDuel = false;
+    }
+    await sleep(220);
     this.renderPanels();
   }
 
@@ -703,7 +724,7 @@ export class GameView {
   }
 
   private onKey = (e: KeyboardEvent) => {
-    if (document.querySelector('.modal-bg')) return;
+    if (this.inDuel || document.querySelector('.modal-bg')) return;
     const k = e.key.toLowerCase();
     if (e.key === '0' || e.key === 'Home') {
       this.renderer.resetCamera();
