@@ -1,76 +1,68 @@
-// Controlador da partida: liga o núcleo de regras, o canvas, o painel e a IA.
-// Turno por fase: você move todas as suas unidades; depois a IA move todas as dela.
+// Tela da partida: quadra, placar, cartões dos jogadores, ações e a fase da IA.
 
 import {
-  ABILITIES,
-  abilityBlock,
-  abilityTargets,
   activatable,
-  attackArea,
-  attackBarricade,
-  attackBaseMelee,
-  attackMelee,
-  attackRanged,
-  attackRangedBase,
-  BASE_LANCES,
+  applyDuel,
   beginActivation,
-  canMoveNow,
-  canRun,
-  canUseItem,
+  bonusAction,
+  canAct,
   cancelActivation,
-  CLASSES,
-  collect,
+  canSprint,
+  canUseSpecial,
+  chebyshev,
+  chooseCorner,
+  chooseDive,
   createGame,
-  crossCells,
-  currentAbilityTargets,
   currentTargets,
-  currentUnit,
   destinations,
+  directKickPreview,
   drainEvents,
   endActivation,
   endPhase,
-  performAction,
-  getUnit,
-  heal,
-  ITEMS,
-  LEVEL_XP,
-  MAX_LEVEL,
+  executePlan,
+  getPlayer,
+  goalChance,
+  holderOf,
   moveTo,
   newMemory,
+  pass,
   planActivation,
-  points,
-  previewAttacks,
-  roundsToShuffle,
-  run,
-  RUN_BONUS,
-  RUN_COST,
-  sideUnit,
-  squareCells,
-  tauntOf,
-  TERRAIN,
+  playerAt,
+  ROLES,
+  ROUNDS_PER_HALF,
+  FOUL_LIMIT,
+  same,
+  shoot,
+  shotPreview,
+  shotResult,
+  sidePlayer,
+  sprint,
+  startDribble,
+  startTackle,
+  takeDirectKick,
+  TEAM_NAME,
   undoMove,
-  unitAt,
-  unitAtq,
-  unlockLevel,
-  useAbility,
-  useItem,
-  WEIGHT_LABEL,
+  useSpecial,
 } from '../core';
-import type { ConfrontoState, GameState, LanceMemory, NodeColor, Pos, Target, Team, Unit } from '../core';
-import { openConfronto } from './confronto-modal';
-import { classIconSvg } from './icons';
-import { spriteDataUrl } from './sprites';
+import type { Corner, Difficulty, DuelState, GameState, LanceMemory, Player, Pos, Target, Team } from '../core';
 import { clear, h } from './dom';
-import { Renderer } from './renderer';
-import type { Highlights } from './renderer';
-import type { MatchConfig } from './setup';
+import { openDuel } from './duel-modal';
+import { emptyHighlights, Renderer } from './renderer';
+import type { Highlights, TargetMark } from './renderer';
+import { chooseShotCorner } from './shot-modal';
+import { portraitUrl } from './sprites';
+
+export interface MatchConfig {
+  difficulty: Difficulty;
+  seed: number;
+}
 
 const PLAYER: Team = 'azul';
-const STEP_MS = 85;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const same = (a: Pos, b: Pos) => a.x === b.x && a.y === b.y;
+const AI: Team = 'vermelho';
+const CORNERS: Corner[] = ['esq', 'meio', 'dir'];
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-type Mode = 'normal' | 'mirar' | 'habilidade';
+type Mode = 'normal' | 'alto';
 
 export class GameView {
   private s: GameState;
@@ -82,113 +74,97 @@ export class GameView {
   private busy = false;
   private hl: Highlights = emptyHighlights();
   private raf = 0;
-  /** Última posição do mouse sobre o tabuleiro (para refazer a casa sob ele quando a câmera desliza). */
   private mouseAt: { x: number; y: number } | null = null;
-  /** A casa destacada veio do mouse (e não do teclado ou da seleção da unidade). */
   private hoverByMouse = false;
-  private el = {
-    top: h('div', { class: 'topbar' }),
-    side: h('aside', { class: 'side' }),
-    hint: h('div', { class: 'hint' }),
-    canvas: h('canvas', { id: 'board' }),
-    bar: h('div', { class: 'unit-bar' }),
-    tip: h('div', { class: 'unit-tip' }),
-  };
-  /** Unidade mostrada na janelinha de informações (null = escondida). */
-  private tipUnit: string | null = null;
-  private tipFromCard = false;
-  /** O cursor (hover) está sendo controlado pelas setas. */
   private kbCursor = false;
-
+  private ended = false;
+  private el = {
+    top: h('div', { class: 'scoreboard' }),
+    canvas: h('canvas', { class: 'board' }),
+    hint: h('div', { class: 'hint' }),
+    side: h('div', { class: 'side' }),
+    log: h('div', { class: 'log' }),
+  };
 
   constructor(
     private root: HTMLElement,
     private config: MatchConfig,
     private onExit: (rematch: boolean) => void,
   ) {
-    this.s = createGame({ azul: config.azul, vermelho: config.vermelho, seed: config.seed });
+    this.s = createGame({ seed: config.seed });
   }
 
-  /** Estado atual (usado pelos testes automatizados no navegador). */
   get state(): GameState {
     return this.s;
   }
 
-  /** Renderizador (testes automatizados). */
   get board(): Renderer {
     return this.renderer;
   }
 
   get isBusy(): boolean {
-    return this.busy;
+    return this.busy || this.renderer.busy;
   }
 
-  /** Centro de uma casa na página (testes automatizados). */
   cellPoint(x: number, y: number): { x: number; y: number } {
-    return this.renderer.clientPoint(x, y, this.s);
+    return this.renderer.clientPoint(x, y);
   }
 
   mount(): void {
     clear(this.root);
     this.root.append(
       this.el.top,
-      h('div', { class: 'layout' }, h('div', { class: 'board-wrap' }, this.el.canvas, this.el.hint, this.el.bar), this.el.side),
+      h(
+        'div',
+        { class: 'layout' },
+        h('div', { class: 'board-wrap' }, this.el.canvas, this.el.hint),
+        h('div', { class: 'side-wrap' }, this.el.side, this.el.log),
+      ),
     );
-    document.body.append(this.el.tip);
     this.renderer = new Renderer(this.el.canvas, this.s);
-    this.el.canvas.addEventListener('click', (e) => {
-      const p = this.renderer.cellAt(e.clientX, e.clientY, this.s);
+    const c = this.el.canvas;
+    c.addEventListener('click', (e) => {
+      const p = this.renderer.cellAt(e.clientX, e.clientY);
       if (p) void this.onCellClick(p);
     });
-    this.el.canvas.addEventListener('mousemove', (e) => {
+    c.addEventListener('mousemove', (e) => {
       this.renderer.pointer(e.clientX, e.clientY);
       this.mouseAt = { x: e.clientX, y: e.clientY };
       this.hoverByMouse = true;
       this.kbCursor = false;
-      const p = this.renderer.cellAt(e.clientX, e.clientY, this.s);
+      const p = this.renderer.cellAt(e.clientX, e.clientY);
       if (!p || !this.hover || !same(p, this.hover)) {
         this.hover = p;
         this.refreshHighlights();
+        this.renderHint();
       }
-      const u = p ? unitAt(this.s, p.x, p.y) : undefined;
-      if (u) {
-        this.tipFromCard = false;
-        this.showTip(u.id, e.clientX + 16, e.clientY + 12);
-      }
-      else this.hideTip();
     });
-    this.el.canvas.addEventListener('mouseleave', () => {
+    c.addEventListener('mouseleave', () => {
       this.renderer.pointer(null);
       this.mouseAt = null;
       this.hover = null;
-      this.hideTip();
       this.refreshHighlights();
     });
-    // Zoom com a roda do mouse, apontado para o cursor.
-    this.el.canvas.addEventListener(
+    c.addEventListener(
       'wheel',
       (e) => {
         e.preventDefault();
         this.renderer.zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15);
-        this.hideTip();
       },
       { passive: false },
     );
-    // O botão do meio não deve abrir a rolagem automática do navegador.
-    this.el.canvas.addEventListener('mousedown', (e) => {
+    c.addEventListener('mousedown', (e) => {
       if (e.button === 1) e.preventDefault();
     });
-    this.el.canvas.addEventListener('auxclick', (e) => e.preventDefault());
-    this.el.canvas.addEventListener('contextmenu', (e) => {
+    c.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       this.escape();
     });
     document.addEventListener('keydown', this.onKey);
     const loop = (t: number) => {
       this.renderer.draw(this.s, this.hl, t);
-      // A câmera pode deslizar com o mouse parado: a casa sob ele acompanha.
       if (this.mouseAt && this.hoverByMouse && !this.kbCursor) {
-        const p = this.renderer.cellAt(this.mouseAt.x, this.mouseAt.y, this.s);
+        const p = this.renderer.cellAt(this.mouseAt.x, this.mouseAt.y);
         if (p && (!this.hover || !same(p, this.hover))) {
           this.hover = p;
           this.refreshHighlights();
@@ -197,52 +173,295 @@ export class GameView {
       this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
-    this.afterChange();
+    this.renderPanels();
+    this.renderer.pushEvents([{ kind: 'apito', text: 'Apita o árbitro! 1º tempo', long: true }], this.s);
+    void this.settle();
   }
 
   destroy(): void {
     cancelAnimationFrame(this.raf);
     document.removeEventListener('keydown', this.onKey);
-    this.el.tip.remove();
+    document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
   }
 
-  /**
-   * Seleciona uma unidade sua (card, tecla 1–5 ou clique no tabuleiro): abre o movimento se ela
-   * ainda pode agir e prende a câmera nela, centralizada, até apertar X.
-   */
+  // ---------- Fluxo ----------
+
+  private isPlayerTurn(): boolean {
+    return !this.s.over && this.s.activeTeam === PLAYER;
+  }
+
+  private flush(): void {
+    this.renderer.pushEvents(drainEvents(this.s), this.s);
+  }
+
+  /** Manda os eventos para a tela, espera as animações e depois atualiza painéis (e a IA, se for a vez dela). */
+  private async settle(): Promise<void> {
+    this.flush();
+    this.hl = emptyHighlights();
+    await this.renderer.idle();
+    this.refreshHighlights();
+    this.renderPanels();
+    if (this.s.over) {
+      this.showEnd();
+      return;
+    }
+    if (!this.busy && this.s.activeTeam === AI) void this.runAiPhase();
+  }
+
+  /** Ações do jogador: trava a entrada até as animações terminarem. */
+  private async act(fn: () => Promise<void> | void): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    this.hl = { ...emptyHighlights(), activeId: this.s.activation?.playerId ?? null };
+    try {
+      await fn();
+      this.flush();
+      await this.renderer.idle();
+      if (this.s.pendingDirect) await this.directKick();
+      // Depois de agir (sem bônus de drible), o jogador termina sozinho.
+      const a = this.s.activation;
+      if (a && a.acted && !canAct(this.s)) {
+        endActivation(this.s);
+        this.afterUnit();
+      } else if (a && !this.s.over && getPlayer(this.s, a.playerId).team !== PLAYER) {
+        this.selectedId = null;
+      }
+    } finally {
+      this.busy = false;
+    }
+    if (this.s.activation && this.kbCursor) {
+      const p = getPlayer(this.s, this.s.activation.playerId);
+      this.hover = { x: p.x, y: p.y };
+    }
+    await this.settle();
+  }
+
+  private afterUnit(): void {
+    this.selectedId = null;
+    this.mode = 'normal';
+    this.renderer.lockOn(null);
+    // O próximo jogador livre já fica selecionado (com o cursor nele).
+    const next = this.nextFree();
+    if (next && this.isPlayerTurn()) this.hover = { x: next.x, y: next.y };
+  }
+
+  private nextFree(): Player | undefined {
+    return activatable(this.s).find((p) => p.team === PLAYER);
+  }
+
+  private async resolveDuel(cs: DuelState): Promise<void> {
+    this.flush();
+    await this.renderer.idle();
+    const atk = sidePlayer(this.s, cs, 'atk');
+    await openDuel({
+      s: this.s,
+      cs,
+      playerSide: atk.team === PLAYER ? 'atk' : 'def',
+      difficulty: this.config.difficulty,
+      memory: this.memory,
+    });
+    applyDuel(this.s, cs);
+    this.flush();
+    await this.renderer.idle();
+    this.renderPanels();
+  }
+
+  /** Chute de um jogador seu: canto escolhido por você, mergulho pela IA. */
+  private async playerShot(bomba: boolean): Promise<void> {
+    const s = this.s;
+    const p = getPlayer(s, s.activation!.playerId);
+    const pv = shotPreview(s, p, bomba);
+    const revealed = pv.shooterReads && !pv.open && !pv.blockerId ? chooseDive(s) : null;
+    const corner = await chooseShotCorner({
+      s,
+      shooter: p,
+      preview: pv,
+      role: 'chute',
+      title: bomba ? 'Bomba!' : 'Chute ao gol',
+      revealed,
+      cancellable: true,
+    });
+    if (!corner) return;
+    const dive = revealed ?? (pv.keeperReads ? corner : chooseDive(s));
+    shoot(s, corner, dive, bomba);
+  }
+
+  /** Chute da IA contra o seu goleiro: você escolhe o mergulho. */
+  private async aiShot(p: Player, bomba: boolean, direto: boolean): Promise<{ corner: Corner; dive: Corner | null }> {
+    const s = this.s;
+    const pv = shotPreview(s, p, bomba, direto);
+    if (pv.blockerId || pv.open) return { corner: chooseCorner(s, pv), dive: null };
+    this.renderer.lockOn(p.id);
+    await sleep(350);
+    if (pv.shooterReads) {
+      const dive = await chooseShotCorner({
+        s,
+        shooter: p,
+        preview: pv,
+        role: 'defesa',
+        title: direto ? 'Tiro livre direto contra você' : `Chute de ${p.name}!`,
+      });
+      const corner = CORNERS.find((c) => shotResult(pv, c, dive) === 'gol') ?? chooseCorner(s, pv);
+      return { corner, dive };
+    }
+    const corner = chooseCorner(s, pv);
+    const dive = await chooseShotCorner({
+      s,
+      shooter: p,
+      preview: pv,
+      role: 'defesa',
+      title: direto ? 'Tiro livre direto contra você' : `Chute de ${p.name}!`,
+      revealed: pv.keeperReads ? corner : null,
+    });
+    return { corner, dive };
+  }
+
+  /** Tiro livre direto (6ª falta em diante), de qualquer um dos times. */
+  private async directKick(): Promise<void> {
+    const s = this.s;
+    const dk = directKickPreview(s);
+    if (!dk) return;
+    this.renderer.pushEvents([{ kind: 'apito', text: 'Tiro livre direto!' }], s);
+    await this.renderer.idle();
+    if (dk.shooter.team === PLAYER) {
+      const pv = dk.preview;
+      const revealed = pv.shooterReads ? chooseDive(s) : null;
+      const corner =
+        (await chooseShotCorner({
+          s,
+          shooter: dk.shooter,
+          preview: pv,
+          role: 'chute',
+          title: 'Tiro livre direto',
+          revealed,
+        })) ?? 'meio';
+      takeDirectKick(s, corner, revealed ?? (pv.keeperReads ? corner : chooseDive(s)));
+    } else {
+      const { corner, dive } = await this.aiShot(dk.shooter, false, true);
+      takeDirectKick(s, corner, dive);
+    }
+    this.flush();
+    await this.renderer.idle();
+  }
+
+  /** Fase da IA: um jogador vermelho de cada vez, com as animações de cada jogada. */
+  private async runAiPhase(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    this.mode = 'normal';
+    this.selectedId = null;
+    this.renderer.lockOn(null);
+    this.refreshHighlights();
+    this.renderPanels();
+    const s = this.s;
+    const diff = this.config.difficulty;
+    await sleep(350);
+    let guard = 0;
+    while (!s.over && s.activeTeam === AI && guard++ < 40) {
+      if (s.pendingDirect) {
+        await this.directKick();
+        this.renderPanels();
+        continue;
+      }
+      const plan = planActivation(s, diff);
+      if (!plan) {
+        endPhase(s);
+        break;
+      }
+      this.selectedId = plan.playerId;
+      const r = executePlan(s, plan);
+      this.flush();
+      await this.renderer.idle();
+      if (r.duel) {
+        await this.resolveDuel(r.duel);
+        if (s.pendingDirect) continue;
+      }
+      if (r.shot) {
+        const bomba = plan.action?.kind === 'chute' && plan.action.bomba;
+        const p = getPlayer(s, plan.playerId);
+        const { corner, dive } = await this.aiShot(p, bomba, false);
+        shoot(s, corner, dive, bomba);
+        this.flush();
+        await this.renderer.idle();
+        this.renderer.lockOn(null);
+      }
+      if (s.activation && s.activeTeam === AI) {
+        if (s.activation.bonus) {
+          await sleep(200);
+          const follow = bonusAction(s, diff);
+          if (follow?.kind === 'passe') {
+            const out = pass(s, follow.toId, follow.alto);
+            this.flush();
+            await this.renderer.idle();
+            if (out.duel) await this.resolveDuel(out.duel);
+          } else if (follow?.kind === 'chute') {
+            const p = getPlayer(s, s.activation.playerId);
+            const { corner, dive } = await this.aiShot(p, follow.bomba, false);
+            shoot(s, corner, dive, follow.bomba);
+            this.flush();
+            await this.renderer.idle();
+            this.renderer.lockOn(null);
+          }
+        }
+        if (s.pendingDirect) continue;
+        if (s.activation) endActivation(s);
+      }
+      this.flush();
+      await this.renderer.idle();
+      this.renderPanels();
+      await sleep(diff === 'recruta' ? 160 : 120);
+    }
+    this.selectedId = null;
+    this.busy = false;
+    const first = this.nextFree();
+    if (first && this.kbCursor) this.hover = { x: first.x, y: first.y };
+    await this.settle();
+  }
+
+  // ---------- Seleção e cursor ----------
+
   private selectOwn(id: string): void {
     const s = this.s;
-    const u = getUnit(s, id);
-    if (!u.alive || this.busy) return;
-    if (this.isPlayerTurn() && u.team === PLAYER && !u.activated && s.activation?.unitId !== id) {
+    if (this.busy) return;
+    const p = getPlayer(s, id);
+    if (this.isPlayerTurn() && p.team === PLAYER && !p.activated && s.activation?.playerId !== id) {
+      if (s.activation && (s.activation.moved || s.activation.acted)) endActivation(s);
       beginActivation(s, id);
       this.mode = 'normal';
     }
     this.selectedId = id;
     this.renderer.lockOn(id);
-    // O cursor do teclado começa na unidade.
-    this.hover = { x: u.x, y: u.y };
+    this.hover = { x: p.x, y: p.y };
     this.hoverByMouse = false;
-    this.afterChange();
+    this.flush();
+    this.refreshHighlights();
+    this.renderPanels();
   }
 
-  /** Setas: move o cursor uma casa (→ +x, ← −x, ↓ +y, ↑ −y, que é como os eixos aparecem na tela). */
+  /** Casas onde o cursor do teclado pode parar quando há um jogador seu em ação. */
+  private cursorCells(): Pos[] | null {
+    const s = this.s;
+    const a = s.activation;
+    if (!a || !this.isPlayerTurn() || this.busy) return null;
+    const p = getPlayer(s, a.playerId);
+    return [{ x: p.x, y: p.y }, ...this.hl.moves, ...this.hl.targets.map((t) => ({ x: t.x, y: t.y }))];
+  }
+
   private moveCursor(dx: number, dy: number): void {
     const s = this.s;
     const a = s.activation;
-    const start = this.hover ?? (a ? getUnit(s, a.unitId) : s.bases[PLAYER]);
+    const start = this.hover ?? (a ? getPlayer(s, a.playerId) : holderOf(s));
     let x = Math.max(0, Math.min(s.width - 1, start.x + dx));
     let y = Math.max(0, Math.min(s.height - 1, start.y + dy));
     const allowed = this.cursorCells();
     if (allowed) {
-      // Só casas válidas: a mais próxima na direção da seta, preferindo seguir reto.
       let best: Pos | null = null;
       let bestScore = Infinity;
       for (const c of allowed) {
         const along = (c.x - start.x) * dx + (c.y - start.y) * dy;
         if (along <= 0) continue;
         const across = Math.abs((c.x - start.x) * dy) + Math.abs((c.y - start.y) * dx);
-        if (across > along) continue; // fora do cone da direção
+        if (across > along) continue;
         const score = along + across * 2;
         if (score < bestScore) {
           bestScore = score;
@@ -256,38 +475,11 @@ export class GameView {
     this.hover = { x, y };
     this.hoverByMouse = false;
     this.kbCursor = true;
-    // Escolhendo o movimento, a câmera desliza até a casa; fora disso, só se ela sair da tela.
-    if (this.renderer.aiming) this.renderer.aimAt(x, y);
-    else this.renderer.ensureVisible(x, y, s);
-    const u = unitAt(s, x, y);
-    if (u) {
-      const pt = this.renderer.settledClientPoint(x, y, s);
-      this.tipFromCard = false;
-      this.showTip(u.id, pt.x + 22, pt.y + 10);
-    } else {
-      this.hideTip();
-    }
+    this.renderer.ensureVisible(x, y);
     this.refreshHighlights();
+    this.renderHint();
   }
 
-  /**
-   * Casas onde o cursor do teclado pode parar com uma unidade ativa: as do modo atual (movimento e
-   * alvos, mira ou habilidade) e a própria unidade. null = cursor livre (sem unidade ativa).
-   */
-  private cursorCells(): Pos[] | null {
-    const s = this.s;
-    const a = s.activation;
-    if (!a || !this.isPlayerTurn() || this.busy) return null;
-    const u = getUnit(s, a.unitId);
-    const hl = this.hl;
-    const cells: Pos[] = [{ x: u.x, y: u.y }];
-    if (this.mode === 'mirar') cells.push(...hl.areaRange);
-    else if (this.mode === 'habilidade') cells.push(...hl.abilityTargets, ...hl.areaRange);
-    else cells.push(...hl.moves, ...currentTargets(s).filter((t) => t.kind !== 'area'));
-    return cells;
-  }
-
-  /** Espaço: confirma a casa do cursor, como um clique. Na própria unidade ativa, encerra a unidade. */
   private confirmCursor(): void {
     const s = this.s;
     const a = s.activation;
@@ -296,452 +488,70 @@ export class GameView {
       if (a) this.endUnit();
       return;
     }
-    if (a && this.mode === 'normal') {
-      const u = getUnit(s, a.unitId);
-      if (u.x === c.x && u.y === c.y) {
+    if (a) {
+      const p = getPlayer(s, a.playerId);
+      if (same(p, c)) {
         this.endUnit();
         return;
       }
     }
-    void this.onCellClick(c).then(() => {
-      // Depois de andar, o cursor acompanha a unidade.
-      const now = this.s.activation;
-      if (now) {
-        const u = getUnit(this.s, now.unitId);
-        if (this.kbCursor) this.hover = { x: u.x, y: u.y };
-        this.refreshHighlights();
-      }
-    });
+    void this.onCellClick(c);
   }
 
-  /** Solta a câmera para voltar a seguir o mouse (X). */
-  private releaseCamera(): void {
-    this.renderer.lockOn(null);
-  }
+  // ---------- Alvos ----------
 
-  /** Depois de confirmar, a câmera fica parada onde estava (até X ou nova seleção). */
-  private holdCamera(): void {
-    if (this.renderer.lockedOn) this.renderer.hold();
-  }
-
-  // ---------- Janela de informações ----------
-
-  private showTip(unitId: string, x: number, y: number): void {
-    const u = this.s.units.find((v) => v.id === unitId);
-    if (!u || !u.alive) return this.hideTip();
-    if (this.tipUnit !== unitId) {
-      this.tipUnit = unitId;
-      this.fillTip();
+  /** Ações válidas que aparecem na quadra, uma por casa (o passe respeita o modo rasteiro/alto). */
+  private cellTargets(): { pos: Pos; target: Target; mark: TargetMark }[] {
+    const s = this.s;
+    const out: { pos: Pos; target: Target; mark: TargetMark }[] = [];
+    const all = currentTargets(s);
+    const passes = new Map<string, Target & { kind: 'passe' }>();
+    for (const t of all) {
+      if (t.kind !== 'passe') continue;
+      const want = this.mode === 'alto';
+      const prev = passes.get(t.toId);
+      if (t.alto === want) passes.set(t.toId, t);
+      else if (!prev && !want) passes.set(t.toId, t); // só alcança pelo alto
     }
-    const tip = this.el.tip;
-    tip.style.display = 'block';
-    const w = tip.offsetWidth;
-    const hgt = tip.offsetHeight;
-    tip.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, x))}px`;
-    tip.style.top = `${Math.max(8, Math.min(window.innerHeight - hgt - 8, y))}px`;
-  }
-
-  private hideTip(): void {
-    this.tipUnit = null;
-    this.tipFromCard = false;
-    this.el.tip.style.display = 'none';
-  }
-
-  private fillTip(): void {
-    const s = this.s;
-    const u = this.tipUnit ? s.units.find((v) => v.id === this.tipUnit) : undefined;
-    clear(this.el.tip);
-    if (!u) return;
-    const d = CLASSES[u.cls];
-    const ab = ABILITIES[u.cls];
-    const flags: string[] = [];
-    if (u.ready) flags.push('Prontidão');
-    if (u.oil) flags.push('Óleo ativo');
-    if (u.focus) flags.push('Foco ativo');
-    if (tauntOf(s, u)) flags.push('Provocada');
-    if (s.phase <= u.stuckUntil) flags.push('Imobilizada');
-    if (u.stamina <= 0) flags.push('Exausta');
-    const range = d.ranged ? `${d.ranged.min}–${d.ranged.max}` : '1';
-    this.el.tip.append(h('div', {},
-      h(
-        'div',
-        { class: `tt-name ${u.team}` },
-        h('span', { class: `tt-icon ${u.team}` }, classIconSvg(u.cls, 14, '#fff')),
-        `${d.name} ${u.team === 'azul' ? 'Azul' : 'Vermelho'}`,
-        h('span', { class: 'tt-level' }, ` · Level ${u.level}`),
-        h('img', { class: 'tt-sprite', src: spriteDataUrl(u.cls, u.team), alt: '' }),
-      ),
-      h('div', { class: 'tt-sub' }, `${WEIGHT_LABEL[d.weight]} · ${BASE_LANCES[d.weight]} lance(s) · ${d.role}`),
-      h(
-        'div',
-        { class: 'tt-grid' },
-        h('span', { class: 'tt-hp' }, `HP ${u.hp}/${u.maxHp}`),
-        h('span', { class: 'tt-st' }, `ST ${u.stamina}/${d.stamina}`),
-        h('span', { class: 'tt-atq' }, `ATQ ${unitAtq(u)}`),
-        h('span', { class: 'tt-arm' }, `ARM ${d.armadura}`),
-        h('span', { class: 'tt-mov' }, `MOV ${d.mov}`),
-        h('span', { class: 'tt-mov' }, `Alc ${range}`),
-      ),
-      h('div', { class: 'tt-ab' }, `${ab.name} (${ab.cost} ST)`, u.level < unlockLevel(u) ? h('span', { class: 'tt-lock' }, ` · level ${unlockLevel(u)}`) : null),
-      u.items.length
-        ? h(
-            'div',
-            { class: 'tt-items' },
-            u.items.map((it) => h('span', { class: `tt-item ${ITEMS[it].color}` }, ITEMS[it].name)),
-          )
-        : null,
-      flags.length ? h('div', { class: 'tt-flags' }, flags.join(' · ')) : null,
-      u.activated ? h('div', { class: 'tt-done' }, 'Já agiu nesta fase') : null,
-    ));
-  }
-
-  // ---------- Barra de unidades ----------
-
-  private renderBar(): void {
-    const s = this.s;
-    clear(this.el.bar);
-    const mine = s.units.filter((u) => u.team === PLAYER);
-    for (const u of mine) {
-      const d = CLASSES[u.cls];
-      const active = s.activation?.unitId === u.id;
-      const state = !u.alive ? 'Abatida' : active ? 'Em ação' : u.activated ? 'Já agiu' : this.isPlayerTurn() ? 'Pronta' : 'Aguardando';
-      const cls = ['uc', `lv${u.level}`, !u.alive ? 'dead' : '', u.activated && !active ? 'done' : '', active ? 'active' : '', this.selectedId === u.id && !active ? 'selected' : ''].join(' ');
-      const card = h(
-        'button',
-        {
-          class: cls,
-          disabled: !u.alive,
-          onclick: () => this.selectOwn(u.id),
-          onmouseenter: (e: MouseEvent) => {
-            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-            this.tipFromCard = true;
-            this.showTip(u.id, r.left, r.top - 8);
-            // Abre para cima do card.
-            const tip = this.el.tip;
-            tip.style.top = `${Math.max(8, r.top - tip.offsetHeight - 8)}px`;
-          },
-          onmouseleave: () => this.hideTip(),
+    for (const t of passes.values()) {
+      const q = getPlayer(s, t.toId);
+      const tone = t.preview.result === 'ok' ? 'bom' : t.preview.result === 'dividida' ? 'risco' : 'ruim';
+      const label = `${t.alto ? 'Passe alto' : 'Passe'} → ${q.name}${t.preview.result === 'cortado' ? ' (cortado!)' : t.preview.result === 'dividida' ? ' (dividida)' : ''}`;
+      out.push({
+        pos: q,
+        target: t,
+        mark: {
+          x: q.x,
+          y: q.y,
+          kind: t.alto ? 'passe-alto' : 'passe',
+          tone,
+          label,
         },
-        h(
-          'div',
-          { class: 'uc-head' },
-          h('span', { class: 'uc-key' }, String(mine.indexOf(u) + 1)),
-          h('span', { class: 'uc-icon', title: d.name }, classIconSvg(u.cls, 15, '#fff')),
-          h('span', { class: 'uc-name' }, d.name),
-          h('span', { class: 'uc-lv' }, `Lv ${u.level}`),
-        ),
-        h('div', { class: 'uc-bar hp' }, h('div', { style: `width:${(100 * u.hp) / u.maxHp}%` })),
-        h('div', { class: 'uc-bar st' }, h('div', { style: `width:${(100 * u.stamina) / d.stamina}%` })),
-        h(
-          'div',
-          { class: 'uc-foot' },
-          h('span', { class: `uc-state ${state === 'Pronta' ? 'ready' : state === 'Em ação' ? 'acting' : ''}` }, state),
-          h('span', {}, u.items.map((it) => h('span', { class: `uc-dot ${ITEMS[it].color}` }))),
-        ),
-        h('img', { class: 'uc-sprite', src: spriteDataUrl(u.cls, u.team), alt: '' }),
-      );
-      this.el.bar.append(card);
+      });
     }
-    // Os cards foram recriados: se o ponteiro já não está em nenhum, some com a janelinha.
-    if (this.tipFromCard && !this.el.bar.querySelector('.uc:hover')) this.hideTip();
-  }
-
-  // ---------- Fluxo ----------
-
-  private isPlayerTurn(): boolean {
-    return !this.s.winner && this.s.activeTeam === PLAYER;
-  }
-
-  private flush(): void {
-    this.renderer.pushEvents(drainEvents(this.s), performance.now());
-  }
-
-  private afterChange(): void {
-    this.flush();
-    this.refreshHighlights();
-    this.renderPanels();
-    if (this.s.winner) {
-      this.showEnd();
-      return;
-    }
-    if (!this.busy && this.s.activeTeam !== PLAYER) void this.runAiPhase();
-  }
-
-  /** Atualiza a tela sem disparar a fase da IA. */
-  private quiet(): void {
-    this.flush();
-    this.refreshHighlights();
-    this.renderPanels();
-  }
-
-  private async animateMove(unitId: string, path: Pos[]): Promise<void> {
-    if (path.length < 2) return;
-    this.renderer.anim = { unitId, path, t0: performance.now(), stepMs: STEP_MS };
-    await sleep(STEP_MS * (path.length - 1) + 30);
-    this.renderer.anim = null;
-  }
-
-  /** Fase da IA: ativa todas as unidades vermelhas, uma de cada vez. */
-  private async runAiPhase(): Promise<void> {
-    this.busy = true;
-    this.mode = 'normal';
-    // Fim da sua fase: a câmera se solta para você assistir a IA como quiser (mouse e zoom).
-    this.releaseCamera();
-    this.quiet();
-    const s = this.s;
-    const team = s.activeTeam;
-    await sleep(500);
-    while (!s.winner && s.activeTeam === team && activatable(s).length) {
-      const plan = planActivation(s, team, this.config.difficulty);
-      if (!plan) break;
-      beginActivation(s, plan.unitId);
-      this.selectedId = plan.unitId;
-      this.quiet();
-      await sleep(250);
-      if (plan.run) run(s);
-      if (plan.moveTo) {
-        const path = moveTo(s, plan.moveTo.x, plan.moveTo.y);
-        await this.animateMove(plan.unitId, path);
-        this.quiet();
-      }
-      if (!s.winner && getUnit(s, plan.unitId).alive && plan.action) {
-        await sleep(150);
-        const cs = performAction(s, plan);
-        this.quiet();
-        if (cs) await this.resolveConfronto(cs);
-        else await sleep(550);
-      }
-      if (s.winner) break;
-      if (s.activation) {
-        endActivation(s);
-      }
-      this.quiet();
-      await sleep(120);
-    }
-    this.selectedId = null;
-    this.busy = false;
-    this.afterChange();
-  }
-
-  private async resolveConfronto(cs: ConfrontoState): Promise<void> {
-    const atk = sideUnit(this.s, cs, 'atk');
-    this.hideTip();
-    await openConfronto({
-      s: this.s,
-      cs,
-      playerSide: atk.team === PLAYER ? 'atk' : 'def',
-      difficulty: this.config.difficulty,
-      memory: this.memory,
-      onTempo: () => this.quiet(),
-    });
-    this.quiet();
-  }
-
-  private doNonMelee(t: Target): void {
-    const s = this.s;
-    switch (t.kind) {
-      case 'meleeBase':
-        attackBaseMelee(s);
-        break;
-      case 'tiro':
-        attackRanged(s, t.unitId);
-        break;
-      case 'tiroBase':
-        attackRangedBase(s);
-        break;
-      case 'barricada':
-        attackBarricade(s, t.x, t.y);
-        break;
-      case 'area':
-        attackArea(s, t.x, t.y);
-        break;
-      case 'cura':
-        heal(s, t.unitId);
-        break;
-      case 'coleta':
-      case 'melee':
-        throw new Error('Tratado em outro lugar');
-    }
-  }
-
-  // ---------- Entrada do jogador ----------
-
-  private async onCellClick(p: Pos): Promise<void> {
-    const s = this.s;
-    if (this.busy || s.winner) return;
-    const clicked = unitAt(s, p.x, p.y);
-    if (!this.isPlayerTurn()) {
-      this.selectedId = clicked?.id ?? null;
-      this.quiet();
-      return;
-    }
-    const a = s.activation;
-    if (a) {
-      if (this.mode === 'mirar') {
-        const t = currentTargets(s).find((x) => x.kind === 'area' && same(x, p));
-        if (t) await this.act(() => this.doNonMelee(t));
-        else this.mode = 'normal';
-        this.quiet();
-        return;
-      }
-      if (this.mode === 'habilidade') {
-        if (currentAbilityTargets(s).some((t) => same(t, p))) await this.act(() => useAbility(s, p.x, p.y));
-        else this.mode = 'normal';
-        this.quiet();
-        return;
-      }
-      const target = currentTargets(s).find((x) => x.kind !== 'area' && x.kind !== 'coleta' && same(x, p));
-      if (target) {
-        await this.act(() => (target.kind === 'melee' ? attackMelee(s, target.unitId) : this.doNonMelee(target)));
-        return;
-      }
-      if (canMoveNow(s) && destinations(s).some((d) => same(d, p))) {
-        this.busy = true;
-        const path = moveTo(s, p.x, p.y);
-        this.refreshHighlights();
-        await this.animateMove(a.unitId, path);
-        this.busy = false;
-        this.quiet();
-        return;
+    for (const t of all) {
+      if (t.kind === 'drible' || t.kind === 'desarme' || t.kind === 'carrinho') {
+        const q = getPlayer(s, t.targetId);
+        const label = t.kind === 'drible' ? `Driblar ${q.name}` : t.kind === 'desarme' ? `Desarmar ${q.name}` : `Carrinho em ${q.name}`;
+        out.push({
+          pos: q,
+          target: t,
+          mark: {
+            x: q.x,
+            y: q.y,
+            kind: t.kind === 'drible' ? 'drible' : 'desarme',
+            tone: 'risco',
+            label,
+          },
+        });
       }
     }
-    // Selecionar outra unidade sua: a atual encerra se já mexeu ou agiu.
-    if (clicked && clicked.team === PLAYER && !clicked.activated && clicked.id !== a?.unitId) {
-      this.selectOwn(clicked.id);
-      return;
-    }
-    this.selectedId = clicked?.id ?? (a ? a.unitId : null);
-    this.quiet();
+    return out;
   }
 
-  /** Executa a ação da unidade ativa; abre o Confronto se houver; encerra a unidade. */
-  private async act(fn: () => ConfrontoState | void | null): Promise<void> {
-    const s = this.s;
-    const unitId = s.activation!.unitId;
-    this.mode = 'normal';
-    this.busy = true;
-    const cs = fn();
-    this.quiet();
-    if (cs) await this.resolveConfronto(cs);
-    else await sleep(400);
-    this.busy = false;
-    if (s.winner) {
-      this.afterChange();
-      return;
-    }
-    const u = getUnit(s, unitId);
-    // Cavaleiro e Espião podem continuar andando; os outros encerram sozinhos.
-    if (u.alive && CLASSES[u.cls].moveAfterAction && s.activation && s.activation.mpLeft > 0) {
-      this.quiet();
-      return;
-    }
-    this.endUnit();
+  private shotTarget(bomba: boolean): (Target & { kind: 'chute' }) | undefined {
+    return currentTargets(this.s).find((t): t is Target & { kind: 'chute' } => t.kind === 'chute' && t.bomba === bomba);
   }
-
-  private endUnit(): void {
-    const s = this.s;
-    if (!s.activation || this.busy || !this.isPlayerTurn()) return;
-    this.mode = 'normal';
-    endActivation(s);
-    this.selectedId = null;
-    this.holdCamera();
-    this.afterChange();
-  }
-
-  private endPlayerPhase(): void {
-    if (this.busy || !this.isPlayerTurn()) return;
-    this.mode = 'normal';
-    endPhase(this.s);
-    this.selectedId = null;
-    this.holdCamera();
-    this.afterChange();
-  }
-
-  /** X (retorno): sai da mira, desfaz o movimento ou desmarca a unidade; e solta a câmera. */
-  private escape(): void {
-    if (this.mode !== 'normal') {
-      this.mode = 'normal';
-    } else if (this.s.activation && this.isPlayerTurn()) {
-      const a = this.s.activation;
-      if (a.hasMoved && !a.hasActed && !a.noUndo) undoMove(this.s);
-      else if (!a.hasMoved && !a.hasActed) {
-        cancelActivation(this.s);
-        this.selectedId = null;
-      }
-    } else {
-      this.selectedId = null;
-    }
-    this.releaseCamera();
-    this.quiet();
-  }
-
-  private onKey = (e: KeyboardEvent) => {
-    if (document.querySelector('.modal-bg')) return;
-    const k = e.key.toLowerCase();
-    if (this.busy) {
-      // Durante a fase da IA, só os comandos de câmera.
-      if (e.key === 'Escape' || k === 'x') this.releaseCamera();
-      else if (e.key === '0' || e.key === 'Home') this.renderer.resetCamera();
-      return;
-    }
-    const steps: Record<string, [number, number]> = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
-    if (steps[e.key]) {
-      e.preventDefault();
-      this.moveCursor(...steps[e.key]);
-    } else if (e.key === ' ') {
-      // Espaço confirma a casa do cursor.
-      e.preventDefault();
-      if (this.isPlayerTurn()) this.confirmCursor();
-    } else if (e.key === 'Enter' || k === 'z') {
-      // Z (ou Enter) confirma: encerra a unidade.
-      e.preventDefault();
-      this.endUnit();
-    } else if (e.key === 'Escape' || k === 'x') {
-      // X (ou Esc) volta.
-      this.escape();
-    } else if (/^[1-5]$/.test(e.key)) {
-      const mine = this.s.units.filter((u) => u.team === PLAYER);
-      const u = mine[Number(e.key) - 1];
-      if (u && u.alive) this.selectOwn(u.id);
-    } else if (k === 'e' && this.isPlayerTurn()) {
-      this.endPlayerPhase();
-    } else if (k === 'r' && this.isPlayerTurn() && canRun(this.s)) {
-      run(this.s);
-      this.quiet();
-    } else if (k === 'm' && this.canAim()) {
-      this.mode = this.mode === 'mirar' ? 'normal' : 'mirar';
-      this.quiet();
-    } else if (k === 'h' && this.isPlayerTurn()) {
-      this.toggleAbility();
-    } else if (e.key === '0' || e.key === 'Home') {
-      this.renderer.resetCamera();
-    }
-  };
-
-  private canAim(): boolean {
-    const u = currentUnit(this.s);
-    if (!u || !this.isPlayerTurn() || this.s.activation!.hasActed) return false;
-    const r = CLASSES[u.cls].ranged;
-    return !!r && (r.kind === 'morteiro' || r.kind === 'granada');
-  }
-
-  /** Habilidades sem alvo (Provocar, Cura em área) disparam na hora; as outras entram em modo de mira. */
-  private toggleAbility(): void {
-    const s = this.s;
-    const u = currentUnit(s);
-    if (!u || abilityBlock(s, u)) return;
-    const targets = currentAbilityTargets(s);
-    if (!targets.length) return;
-    const ab = ABILITIES[u.cls].id;
-    if (ab === 'provocar' || ab === 'curaArea') {
-      void this.act(() => useAbility(s, u.x, u.y));
-      return;
-    }
-    this.mode = this.mode === 'habilidade' ? 'normal' : 'habilidade';
-    this.quiet();
-  }
-
-  // ---------- Tela ----------
 
   private refreshHighlights(): void {
     const s = this.s;
@@ -749,366 +559,462 @@ export class GameView {
     hl.hover = this.hover;
     hl.kbCursor = this.kbCursor;
     hl.selectedId = this.selectedId;
-    hl.activeId = s.activation?.unitId ?? null;
-    if (s.activation && this.isPlayerTurn() && !this.busy) {
-      const targets = currentTargets(s);
-      if (this.mode === 'mirar') {
-        hl.areaRange = targets.filter((t) => t.kind === 'area');
-        if (this.hover && hl.areaRange.some((c) => same(c, this.hover!))) hl.areaPreview = crossCells(s, this.hover.x, this.hover.y);
-      } else if (this.mode === 'habilidade') {
-        const ab = currentAbilityTargets(s);
-        hl.abilityTargets = ab;
-        const u = currentUnit(s)!;
-        if (ABILITIES[u.cls].id === 'fumaca' && this.hover && ab.some((c) => same(c, this.hover!))) {
-          hl.abilityTargets = [];
-          hl.areaRange = ab;
-          hl.areaPreview = squareCells(s, this.hover.x, this.hover.y, 1);
+    hl.activeId = s.activation?.playerId ?? null;
+    if (this.isPlayerTurn() && !this.busy && s.activation) {
+      hl.moves = destinations(s);
+      const targets = this.cellTargets();
+      hl.targets = targets.map((t) => t.mark);
+      const p = getPlayer(s, s.activation.playerId);
+      if (s.holder === p.id && canAct(s)) {
+        for (const q of s.players) {
+          if (q.team === PLAYER || q.unbalanced || this.mode === 'alto') continue;
+          for (let dx = -1; dx <= 1; dx++)
+            for (let dy = -1; dy <= 1; dy++)
+              if (q.x + dx >= 0 && q.y + dy >= 0 && q.x + dx < s.width && q.y + dy < s.height) hl.cutZones.push({ x: q.x + dx, y: q.y + dy });
         }
-      } else {
-        hl.moves = destinations(s);
-        hl.targets = targets.filter((t) => t.kind !== 'area' && t.kind !== 'cura' && t.kind !== 'coleta');
-        hl.heals = targets.filter((t) => t.kind === 'cura');
-        // Dano previsto: da casa de movimento sob o cursor, ou de onde a unidade está.
-        if (!s.activation.hasActed) {
-          const u = getUnit(s, s.activation.unitId);
-          const moveTo = this.hover && hl.moves.some((c) => same(c, this.hover!)) ? this.hover : null;
-          hl.previews = previewAttacks(s, u, moveTo ?? u, s.activation.hasMoved || !!moveTo);
-        }
+        if (this.shotTarget(false) || this.shotTarget(true)) hl.shot = { team: PLAYER, text: '' };
+      }
+      const under = this.hover ? targets.find((t) => same(t.pos, this.hover!)) : undefined;
+      if (under && under.target.kind === 'passe') {
+        hl.passLine = {
+          from: { x: p.x, y: p.y },
+          to: under.pos,
+          tone: under.mark.tone,
+          alto: under.target.alto,
+        };
       }
     }
     this.hl = hl;
-    // Câmera presa na unidade + casas de movimento abertas = modo de escolha do movimento.
-    this.renderer.setAim(hl.moves.length > 0 && !!s.activation && this.renderer.lockedOn === s.activation.unitId);
-    this.renderHint();
   }
 
-  private renderHint(): void {
+  private async onCellClick(c: Pos): Promise<void> {
     const s = this.s;
-    let text = '';
-    if (s.winner) text = '';
-    else if (!this.isPlayerTurn()) text = 'Fase do Vermelho (IA)…';
-    else if (!s.activation) text = `Sua fase: teclas 1–5 ou clique numa unidade azul. Faltam ${activatable(s).length}. E encerra a fase.`;
-    else if (this.mode === 'mirar') text = 'Mirando: clique numa casa laranja. X volta.';
-    else if (this.mode === 'habilidade') text = 'Habilidade: clique numa casa roxa. X volta.';
-    else {
-      const a = s.activation;
-      text = a.hasActed
-        ? 'Ainda pode andar. Z confirma e encerra; X volta.'
-        : 'Mover (azul) e depois 1 ação: atacar (vermelho), curar (verde), coletar, item ou habilidade. Setas + Espaço escolhem a casa; Z encerra, X volta.';
+    if (this.busy || !this.isPlayerTurn()) return;
+    const a = s.activation;
+    const t = a ? this.cellTargets().find((x) => same(x.pos, c)) : undefined;
+    if (t) {
+      await this.doTarget(t.target);
+      return;
     }
-    if (this.hover) {
-      const t = s.terrain[this.hover.y][this.hover.x];
-      const node = s.nodes.find((n) => same(n, this.hover!));
-      const nodeName = node ? `Cristal ${node.color === 'prisma' ? 'prismático' : node.color} (${node.charges} carga${node.charges === 1 ? '' : 's'})` : null;
-      text += `   [${this.hover.x + 1},${this.hover.y + 1}] ${nodeName ?? TERRAIN[t].label}`;
-      const p = this.hl.previews.find((v) => same(v, this.hover!));
-      if (p) {
-        const side = p.side && p.side !== 'frente' ? ` pelo ${p.side} (×${String(Math.round(p.mult * 100) / 100).replace('.', ',')})` : p.mult < 1 ? ' de frente, no escudo' : ' de frente';
-        text +=
-          p.kind === 'melee'
-            ? ` · Confronto${side}: ${p.dmg} por acerto ×1 (Golpe pesado e Finta batem mais)`
-            : p.kind === 'tiro'
-              ? ` · Tiro${side}: ${p.dmg} de dano`
-              : ` · Base: ${p.dmg} de dano`;
-      }
+    const occ = playerAt(s, c.x, c.y);
+    if (occ && occ.team === PLAYER && occ.id !== a?.playerId) {
+      this.selectOwn(occ.id);
+      return;
     }
-    text += this.renderer?.lockedOn ? '   · Câmera presa (X solta)' : this.renderer?.isHeld ? '   · Câmera parada (X solta)' : '   · Roda: zoom · 0: visão inteira';
-    this.el.hint.textContent = text;
+    if (a && destinations(s).some((d) => same(d, c))) {
+      await this.act(() => moveTo(s, c.x, c.y));
+      return;
+    }
+    if (occ && occ.team === AI) {
+      this.selectedId = occ.id;
+      this.renderPanels();
+    }
   }
+
+  private async doTarget(t: Target): Promise<void> {
+    const s = this.s;
+    await this.act(async () => {
+      switch (t.kind) {
+        case 'passe': {
+          const out = pass(s, t.toId, t.alto);
+          if (out.duel) await this.resolveDuel(out.duel);
+          break;
+        }
+        case 'drible':
+          await this.resolveDuel(startDribble(s, t.targetId));
+          break;
+        case 'desarme':
+          await this.resolveDuel(startTackle(s, t.targetId));
+          break;
+        case 'carrinho':
+          await this.resolveDuel(startTackle(s, t.targetId, true));
+          break;
+        case 'chute':
+          await this.playerShot(t.bomba);
+          break;
+      }
+    });
+  }
+
+  // ---------- Comandos ----------
+
+  private endUnit(): void {
+    const s = this.s;
+    if (!s.activation || this.busy || !this.isPlayerTurn()) return;
+    endActivation(s);
+    this.afterUnit();
+    void this.settle();
+  }
+
+  private endPlayerPhase(): void {
+    if (this.busy || !this.isPlayerTurn()) return;
+    endPhase(this.s);
+    this.afterUnit();
+    void this.settle();
+  }
+
+  private escape(): void {
+    const s = this.s;
+    if (this.busy) {
+      this.renderer.lockOn(null);
+      return;
+    }
+    if (this.mode !== 'normal') this.mode = 'normal';
+    else if (s.activation && this.isPlayerTurn()) {
+      const a = s.activation;
+      if (a.moved && !a.acted) {
+        void this.act(() => undoMove(s));
+        return;
+      }
+      if (!a.moved && !a.acted) {
+        cancelActivation(s);
+        this.selectedId = null;
+      }
+    } else this.selectedId = null;
+    this.renderer.lockOn(null);
+    this.refreshHighlights();
+    this.renderPanels();
+  }
+
+  private doSprint(): void {
+    if (this.busy || !canSprint(this.s)) return;
+    sprint(this.s);
+    this.renderer.pushEvents([{ kind: 'emote', id: this.s.activation!.playerId, emote: 'suor' }], this.s);
+    this.refreshHighlights();
+    this.renderPanels();
+  }
+
+  private doSpecial(): void {
+    if (this.busy || !canUseSpecial(this.s)) return;
+    void this.act(() => useSpecial(this.s));
+  }
+
+  private doShot(bomba: boolean): void {
+    const t = this.shotTarget(bomba);
+    if (!t || this.busy) return;
+    void this.doTarget(t);
+  }
+
+  private toggleAlto(): void {
+    if (this.busy) return;
+    this.mode = this.mode === 'alto' ? 'normal' : 'alto';
+    this.refreshHighlights();
+    this.renderPanels();
+  }
+
+  private onKey = (e: KeyboardEvent) => {
+    if (document.querySelector('.modal-bg')) return;
+    const k = e.key.toLowerCase();
+    if (e.key === '0' || e.key === 'Home') {
+      this.renderer.resetCamera();
+      return;
+    }
+    if (this.busy) {
+      if (e.key === 'Escape' || k === 'x') this.renderer.lockOn(null);
+      return;
+    }
+    const steps: Record<string, [number, number]> = {
+      ArrowUp: [0, -1],
+      ArrowDown: [0, 1],
+      ArrowLeft: [-1, 0],
+      ArrowRight: [1, 0],
+    };
+    if (steps[e.key]) {
+      e.preventDefault();
+      this.moveCursor(...steps[e.key]);
+    } else if (e.key === ' ') {
+      e.preventDefault();
+      if (this.isPlayerTurn()) this.confirmCursor();
+    } else if (e.key === 'Enter' || k === 'z') {
+      e.preventDefault();
+      this.endUnit();
+    } else if (e.key === 'Escape' || k === 'x') {
+      this.escape();
+    } else if (/^[1-5]$/.test(e.key)) {
+      const mine = this.s.players.filter((p) => p.team === PLAYER);
+      const p = mine[Number(e.key) - 1];
+      if (p) this.selectOwn(p.id);
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      const free = activatable(this.s).filter((p) => p.team === PLAYER);
+      if (!free.length) return;
+      const i = free.findIndex((p) => p.id === this.s.activation?.playerId);
+      this.selectOwn(free[(i + 1) % free.length].id);
+    } else if (k === 'e') this.endPlayerPhase();
+    else if (k === 'r') this.doSprint();
+    else if (k === 'a') this.toggleAlto();
+    else if (k === 'c') this.doShot(false);
+    else if (k === 'b') this.doShot(true);
+    else if (k === 'h') this.doSpecial();
+  };
+
+  // ---------- Painéis ----------
 
   private renderPanels(): void {
     this.renderTop();
     this.renderSide();
-    this.renderBar();
-    if (this.tipUnit) this.fillTip();
+    this.renderHint();
+    this.renderLog();
   }
 
   private renderTop(): void {
     const s = this.s;
-    const baseBar = (team: Team) => {
-      const b = s.bases[team];
+    const fouls = (t: Team) => {
+      const dots = [];
+      for (let i = 1; i <= FOUL_LIMIT; i++) dots.push(h('i', { class: i <= s.fouls[t] ? 'on' : '' }));
       return h(
         'div',
-        { class: 'base-hp' },
-        `QG ${team === 'azul' ? 'Azul' : 'Vermelho'}`,
-        h('div', { class: 'hpbar' }, h('div', { style: `width:${(100 * b.hp) / b.maxHp}%` })),
-        `${b.hp}/${b.maxHp}`,
+        {
+          class: 'fouls',
+          title: 'Faltas no tempo (a 6ª vira tiro livre direto)',
+        },
+        h('span', {}, 'faltas'),
+        dots,
       );
     };
+    const turn = s.over ? 'Fim de jogo' : s.activeTeam === PLAYER ? 'Sua vez' : 'Vez do Vermelho (IA)';
     clear(this.el.top);
     this.el.top.append(
-      h('h1', {}, 'Trama'),
-      h('span', {}, `Rodada ${s.round}/${s.maxRounds}`),
-      s.winner
-        ? h('span', { class: 'turn-pill' }, 'Fim de jogo')
-        : h('span', { class: `turn-pill ${s.activeTeam}` }, s.activeTeam === PLAYER ? 'Sua fase (Azul)' : 'Fase do Vermelho (IA)'),
-      baseBar('azul'),
-      baseBar('vermelho'),
-      h('span', { class: 'base-hp' }, `Pontos ${points(s, 'azul')} × ${points(s, 'vermelho')}`),
+      h('div', { class: 'team-score azul' }, h('div', { class: 'tname' }, 'AZUL'), fouls('azul')),
       h(
-        'span',
-        { class: 'base-hp', title: 'A cada 3 rodadas os cristais atravessam wormholes e reaparecem em outras casas.' },
-        roundsToShuffle(s) === 1 ? 'Cristais mudam na próxima rodada' : `Cristais mudam em ${roundsToShuffle(s)} rodadas`,
+        'div',
+        { class: 'score-mid' },
+        h(
+          'div',
+          { class: 'score' },
+          h('b', { class: 'azul' }, String(s.score.azul)),
+          h('span', {}, '×'),
+          h('b', { class: 'vermelho' }, String(s.score.vermelho)),
+        ),
+        h('div', { class: 'clock' }, `${s.half}º tempo · Rodada ${Math.min(s.round, ROUNDS_PER_HALF)}/${ROUNDS_PER_HALF}`),
+        h('div', { class: `turn ${s.over ? '' : s.activeTeam}` }, turn),
       ),
-      h('button', { onclick: () => this.onExit(false), style: 'margin-left:auto' }, 'Novo time'),
+      h('div', { class: 'team-score vermelho' }, h('div', { class: 'tname' }, 'VERMELHO'), fouls('vermelho')),
+    );
+  }
+
+  private card(p: Player, index: number | null): HTMLElement {
+    const s = this.s;
+    const def = ROLES[p.role];
+    const isActive = s.activation?.playerId === p.id;
+    const tags: string[] = [];
+    if (s.holder === p.id) tags.push('⚽');
+    if (p.unbalanced) tags.push('💫');
+    if (p.ready && s.activeTeam !== p.team) tags.push('❗');
+    if (p.muralha) tags.push('🧱');
+    if (p.pedalada) tags.push('🌀');
+    const bar = (v: number, max: number, cls: string) => h('div', { class: `bar ${cls}` }, h('div', { style: `width:${(100 * v) / max}%` }));
+    return h(
+      'div',
+      {
+        class: `pcard ${p.team}${isActive ? ' active' : ''}${p.activated && s.activeTeam === p.team ? ' done' : ''}${this.selectedId === p.id ? ' sel' : ''}`,
+        onclick: () => (p.team === PLAYER ? this.selectOwn(p.id) : ((this.selectedId = p.id), this.renderPanels())),
+        title: `${def.name}: ${def.blurb}\nEspecial: ${def.special} — ${def.specialText}`,
+      },
+      h('img', { src: portraitUrl(p, 2), alt: p.name }),
+      h(
+        'div',
+        { class: 'pinfo' },
+        h('div', { class: 'pname' }, index ? h('kbd', {}, String(index)) : null, `#${p.number} ${p.name}`, h('span', { class: 'tags' }, tags.join(' '))),
+        h('div', { class: 'prole' }, `${def.name} · ${p.specialUsed ? `${def.special} usado` : def.special}`),
+        h('div', { class: 'bars' }, bar(p.fol, def.fol, 'fol'), bar(p.hab, def.hab, 'hab')),
+      ),
     );
   }
 
   private renderSide(): void {
     const s = this.s;
     clear(this.el.side);
-    const shown = this.selectedId ? s.units.find((u) => u.id === this.selectedId && u.alive) : currentUnit(s) ?? undefined;
-    if (this.isPlayerTurn()) this.el.side.append(this.phaseCard());
-    this.el.side.append(shown ? this.unitCard(shown) : this.idleCard());
-    if (s.activation && this.isPlayerTurn()) this.el.side.append(this.actionCard());
-    this.el.side.append(h('div', { class: 'card' }, h('h3', {}, 'Registro'), h('div', { class: 'log' }, s.log.slice(-40).map((l) => h('div', {}, l)))), helpCard());
-    const log = this.el.side.querySelector('.log');
-    if (log) log.scrollTop = log.scrollHeight;
-  }
-
-  private phaseCard(): HTMLElement {
-    const left = activatable(this.s, PLAYER).length;
-    return h(
-      'div',
-      { class: 'card phase-card' },
-      h('span', {}, `Unidades a mover: ${left}`),
-      h('button', { class: left ? '' : 'primary', disabled: this.busy, onclick: () => this.endPlayerPhase(), title: 'As que não agiram ganham Prontidão' }, 'Encerrar fase (E)'),
-    );
-  }
-
-  private idleCard(): HTMLElement {
-    return h(
-      'div',
-      { class: 'card' },
-      h('h3', {}, 'Nenhuma unidade selecionada'),
-      h('div', { style: 'color:var(--muted);font-size:12.5px' }, 'Clique numa unidade para ver os detalhes. As do Vermelho também.'),
-    );
-  }
-
-  private unitCard(u: Unit): HTMLElement {
-    const s = this.s;
-    const d = CLASSES[u.cls];
-    const ab = ABILITIES[u.cls];
-    const status: string[] = [];
-    if (u.activated) status.push('já agiu');
-    if (u.ready) status.push('Prontidão (+1 lance ao defender)');
-    if (u.stamina <= 0) status.push('Exausta');
-    if (u.oil) status.push('Óleo ativo (+3 ATQ)');
-    if (u.focus) status.push('Foco ativo (+1 lance)');
-    if (tauntOf(s, u)) status.push('Provocada pelo Tank');
-    if (s.phase <= u.stuckUntil) status.push('Imobilizada por mina');
-    if (d.forbidden) status.push('Só anda em terreno liso');
-    const range = d.ranged ? `${d.ranged.min}–${d.ranged.max}` : '1';
-    const next = u.level < MAX_LEVEL ? `${u.xp}/${LEVEL_XP[u.level]} XP` : 'nível máximo';
-    return h(
-      'div',
-      { class: 'card', style: `border-top:4px solid var(--${u.team})` },
-      h('h3', {}, `${d.name} ${u.team === 'azul' ? 'Azul' : 'Vermelho'} · Level ${u.level}`),
-      h('div', { style: 'color:var(--muted);font-size:12.5px' }, `${WEIGHT_LABEL[d.weight]} · ${BASE_LANCES[d.weight]} lance(s) · ${d.role} · ${next}`),
+    const mine = s.players.filter((p) => p.team === PLAYER);
+    const theirs = s.players.filter((p) => p.team === AI);
+    this.el.side.append(
+      this.actionCard(),
       h(
         'div',
-        { class: 'stats', style: 'margin-top:6px' },
-        h('span', {}, 'HP ', h('b', {}, `${u.hp}/${u.maxHp}`)),
-        h('span', {}, 'ST ', h('b', {}, `${u.stamina}/${d.stamina}`)),
-        h('span', {}, 'ATQ ', h('b', {}, String(unitAtq(u)))),
-        h('span', {}, 'ARM ', h('b', {}, String(d.armadura))),
-        h('span', {}, 'MOV ', h('b', {}, String(d.mov))),
-        h('span', {}, 'Alc ', h('b', {}, range)),
+        { class: 'cards' },
+        h('div', { class: 'cards-title' }, 'Seu time — Azul'),
+        mine.map((p, i) => this.card(p, i + 1)),
       ),
       h(
         'div',
-        { class: 'ability-line' },
-        h('b', {}, `${ab.name} (${ab.cost} ST)`),
-        u.level < unlockLevel(u) ? h('span', { class: 'locked' }, ` · bloqueada até o level ${unlockLevel(u)}`) : null,
-        h('div', {}, ab.desc),
+        { class: 'cards' },
+        h('div', { class: 'cards-title' }, 'Vermelho (IA)'),
+        theirs.map((p) => this.card(p, null)),
       ),
-      h('div', { class: 'ability-line' }, 'Itens: ', u.items.length ? u.items.map((i) => ITEMS[i].name).join(', ') : 'nenhum'),
-      status.length ? h('div', { style: 'margin-top:6px;font-size:12.5px;color:#f1d27a' }, status.join(' · ')) : null,
     );
   }
 
   private actionCard(): HTMLElement {
     const s = this.s;
-    const a = s.activation!;
-    const u = getUnit(s, a.unitId);
-    const ab = ABILITIES[u.cls];
-    const block = abilityBlock(s, u);
-    const abilityUsable = !block && abilityTargets(s, u).length > 0;
-    const collectButtons: HTMLElement[] = [];
-    for (const t of currentTargets(s)) {
-      if (t.kind !== 'coleta') continue;
-      const colors: Exclude<NodeColor, 'prisma'>[] = t.color === 'prisma' ? ['verde', 'laranja', 'roxo'] : [t.color];
-      for (const c of colors) {
-        const item = { verde: 'tonico', laranja: 'oleo', roxo: 'foco' }[c] as keyof typeof ITEMS;
-        if (collectButtons.some((b) => b.dataset.item === item)) continue;
-        const btn = h('button', { class: `item-btn ${c}`, title: ITEMS[item].desc, onclick: () => void this.act(() => void collect(s, t.x, t.y, c)) }, `Coletar ${ITEMS[item].name}`);
-        btn.dataset.item = item;
-        collectButtons.push(btn);
-      }
+    const a = s.activation;
+    if (s.over) return h('div', { class: 'action-card' }, h('b', {}, 'Fim de jogo'));
+    if (!this.isPlayerTurn()) {
+      const p = this.selectedId ? getPlayer(s, this.selectedId) : null;
+      return h(
+        'div',
+        { class: 'action-card wait' },
+        h('b', {}, 'O Vermelho está jogando…'),
+        h('div', { class: 'sub' }, p ? `${p.name} (${ROLES[p.role].name}) em ação` : 'Assista e se prepare para defender.'),
+      );
     }
+    if (!a || getPlayer(s, a.playerId).team !== PLAYER) {
+      const free = activatable(s).filter((p) => p.team === PLAYER);
+      return h(
+        'div',
+        { class: 'action-card' },
+        h('b', {}, 'Sua fase'),
+        h('div', { class: 'sub' }, `${free.length} jogador(es) ainda podem jogar. Escolha um (1–5, Tab ou clique).`),
+        h('div', { class: 'btns' }, h('button', { onclick: () => this.endPlayerPhase() }, 'E · Encerrar fase')),
+      );
+    }
+    const p = getPlayer(s, a.playerId);
+    const def = ROLES[p.role];
+    const hasBall = s.holder === p.id;
+    const shot = this.shotTarget(false);
+    const bomba = this.shotTarget(true);
+    const special = canUseSpecial(s);
+    const status = a.bonus
+      ? 'Drible vencido! Ainda pode passar ou chutar.'
+      : a.acted
+        ? 'Já agiu.'
+        : a.moved
+          ? 'Andou. Agora pode agir.'
+          : 'Ande e depois aja (ou só aja).';
+    const pct = (t: Target & { kind: 'chute' }) => Math.round(goalChance(t.preview) * 100);
     return h(
       'div',
-      { class: 'card' },
-      h('h3', {}, `Ativação · ${a.hasActed ? 'já agiu' : a.hasMoved ? 'moveu, falta a ação' : 'pode mover e agir'}`),
-      h('div', { style: 'color:var(--muted);font-size:12.5px' }, `Movimento restante: ${a.mpLeft}`),
+      { class: `action-card ${p.team}` },
       h(
         'div',
-        { class: 'actions' },
+        { class: 'ac-head' },
+        h('img', { src: portraitUrl(p, 3) }),
+        h('div', {}, h('b', {}, `#${p.number} ${p.name}`), h('div', { class: 'sub' }, `${def.name} · ${def.blurb}`)),
+      ),
+      h(
+        'div',
+        { class: 'stats' },
+        ['MOV', 'PAS', 'DOM', 'HAB', 'FIN', 'MAR'].map((k, i) =>
+          h('span', {}, h('i', {}, k), String([def.mov, def.pas, def.dom, def.hab, def.fin, def.mar][i])),
+        ),
+      ),
+      h('div', { class: 'sub' }, `Fôlego ${p.fol}/${def.fol} · HAB ${p.hab}/${def.hab}`),
+      h('div', { class: 'notice' }, status),
+      h(
+        'div',
+        { class: 'btns' },
         h(
           'button',
           {
-            disabled: !canRun(s) || this.busy,
-            title: `+${RUN_BONUS} de movimento por ${RUN_COST} de Stamina`,
-            onclick: () => {
-              run(s);
-              this.quiet();
-            },
+            disabled: !canSprint(s),
+            onclick: () => this.doSprint(),
+            title: '+2 casas de movimento por 2 de fôlego',
           },
-          'Correr (R)',
+          a.sprinted ? 'Arrancando!' : 'R · Arrancada',
         ),
-        h(
-          'button',
-          {
-            disabled: !a.hasMoved || a.hasActed || a.noUndo || this.busy,
-            onclick: () => {
-              undoMove(s);
-              this.quiet();
-            },
-          },
-          'Desfazer (X)',
-        ),
-        this.canAim()
+        hasBall && canAct(s)
           ? h(
               'button',
               {
-                class: this.mode === 'mirar' ? 'primary' : '',
-                onclick: () => {
-                  this.mode = this.mode === 'mirar' ? 'normal' : 'mirar';
-                  this.quiet();
-                },
+                class: this.mode === 'alto' ? 'on' : '',
+                onclick: () => this.toggleAlto(),
+                title: 'Passe por cima: +2 de alcance, ignora quem corta, mas a recepção é mais disputada',
               },
-              this.mode === 'mirar' ? 'Mirando… (M)' : 'Mirar (M)',
+              `A · Passe ${this.mode === 'alto' ? 'alto ✓' : 'alto'}`,
             )
           : null,
-        h(
-          'button',
-          {
-            class: `ability-btn${this.mode === 'habilidade' ? ' primary' : ''}`,
-            disabled: !abilityUsable || a.hasActed,
-            title: block ?? (abilityUsable ? ab.desc : 'Sem alvo daqui'),
-            onclick: () => this.toggleAbility(),
-          },
-          `${ab.name} (H)`,
-        ),
-      ),
-      collectButtons.length || u.items.length
-        ? h(
-            'div',
-            { class: 'actions' },
-            collectButtons,
-            u.items.map((it, i) =>
-              h(
-                'button',
-                { class: `item-btn ${ITEMS[it].color}`, disabled: !canUseItem(s, i) || this.busy, title: ITEMS[it].desc, onclick: () => void this.act(() => useItem(s, i)) },
-                `Usar ${ITEMS[it].name}`,
-              ),
-            ),
-          )
-        : null,
-      h(
-        'div',
-        { class: 'actions' },
-        h('button', { class: 'primary', disabled: this.busy, onclick: () => this.endUnit() }, 'Confirmar e encerrar (Z)'),
+        hasBall ? h('button', { disabled: !shot, onclick: () => this.doShot(false) }, shot ? `C · Chutar (${pct(shot)}%)` : 'C · Chutar (longe)') : null,
+        p.role === 'pivo' && hasBall
+          ? h(
+              'button',
+              {
+                disabled: !bomba,
+                onclick: () => this.doShot(true),
+                title: def.specialText,
+              },
+              bomba ? `B · Bomba (${pct(bomba)}%)` : 'B · Bomba',
+            )
+          : null,
+        p.role === 'goleiro' || p.role === 'ala'
+          ? h(
+              'button',
+              {
+                disabled: !special,
+                onclick: () => this.doSpecial(),
+                title: def.specialText,
+              },
+              `H · ${def.special}`,
+            )
+          : null,
+        h('button', { disabled: !(a.moved && !a.acted), onclick: () => this.escape() }, 'X · Desfazer'),
+        h('button', { class: 'primary', onclick: () => this.endUnit() }, 'Z · Terminar jogador'),
+        h('button', { onclick: () => this.endPlayerPhase() }, 'E · Encerrar fase'),
       ),
     );
   }
 
-  private showEnd(): void {
+  private renderHint(): void {
     const s = this.s;
-    if (document.querySelector('.modal-bg.end-bg')) return;
-    const won = s.winner === PLAYER;
-    const title = s.winner === 'empate' ? 'Empate' : won ? 'Vitória do Azul!' : 'Vitória do Vermelho';
-    const bg = h(
-      'div',
-      { class: 'modal-bg end-bg' },
+    let text = 'Setas movem o cursor · Espaço confirma · 1–5/Tab escolhem · Z termina · X volta · roda do mouse = zoom · 0 centraliza';
+    if (this.hover) {
+      const t = this.cellTargets().find((x) => same(x.pos, this.hover!));
+      const occ = playerAt(s, this.hover.x, this.hover.y);
+      if (t && this.isPlayerTurn()) text = `${t.mark.label} — clique ou Espaço`;
+      else if (occ) {
+        const d = ROLES[occ.role];
+        text = `${occ.name} (${TEAM_NAME[occ.team]}) · ${d.name} · fôlego ${occ.fol}/${d.fol} · HAB ${occ.hab}/${d.hab}${occ.unbalanced ? ' · desequilibrado' : ''}`;
+      } else if (this.hl.moves.some((m) => same(m, this.hover!))) text = 'Andar até aqui — clique ou Espaço';
+    }
+    if (this.s.activation && this.isPlayerTurn()) {
+      const p = getPlayer(s, this.s.activation.playerId);
+      const near = s.players.filter((q) => q.team !== p.team && chebyshev(q, p) === 1 && !q.unbalanced).length;
+      if (s.holder === p.id && near && !this.s.activation.moved) text += ` · ${near} marcador(es) colado(s): com a bola, só sai driblando`;
+    }
+    this.el.hint.textContent = text;
+  }
+
+  private renderLog(): void {
+    clear(this.el.log);
+    this.el.log.append(
+      h('div', { class: 'cards-title' }, 'Lances'),
+      ...this.s.log
+        .slice(-7)
+        .reverse()
+        .map((l) => h('div', {}, l)),
+    );
+  }
+
+  private showEnd(): void {
+    if (this.ended) return;
+    this.ended = true;
+    const s = this.s;
+    const scorers = s.players.filter((p) => p.goals > 0).sort((a, b) => b.goals - a.goals);
+    const title = s.winner === 'empate' ? 'Empate!' : s.winner === PLAYER ? 'Vitória do Azul!' : 'O Vermelho venceu';
+    const bg = h('div', { class: 'modal-bg' });
+    const close = (rematch: boolean) => {
+      bg.remove();
+      this.onExit(rematch);
+    };
+    bg.append(
       h(
         'div',
         { class: 'modal end' },
         h('h2', {}, title),
-        h('p', {}, s.winReason),
-        h('p', {}, `Rodada ${s.round} · Pontos Azul ${points(s, 'azul')} × ${points(s, 'vermelho')} Vermelho`),
+        h('div', { class: 'final' }, h('b', { class: 'azul' }, `Azul ${s.score.azul}`), ' × ', h('b', { class: 'vermelho' }, `${s.score.vermelho} Vermelho`)),
         h(
           'div',
-          { class: 'actions' },
-          h(
-            'button',
-            {
-              class: 'primary',
-              onclick: () => {
-                bg.remove();
-                this.onExit(true);
-              },
-            },
-            'Revanche (mesmos times)',
-          ),
-          h(
-            'button',
-            {
-              onclick: () => {
-                bg.remove();
-                this.onExit(false);
-              },
-            },
-            'Novo time',
-          ),
-          h('button', { onclick: () => bg.remove() }, 'Ver o tabuleiro'),
+          { class: 'scorers' },
+          scorers.length
+            ? scorers.map((p) => h('div', { class: p.team }, h('img', { src: portraitUrl(p, 2) }), `${p.name} — ${p.goals} gol${p.goals > 1 ? 's' : ''}`))
+            : h('div', {}, 'Ninguém marcou.'),
+        ),
+        h(
+          'div',
+          { class: 'lance-buttons' },
+          h('button', { class: 'primary', onclick: () => close(true) }, 'Revanche'),
+          h('button', { onclick: () => close(false) }, 'Voltar ao início'),
         ),
       ),
     );
     document.body.append(bg);
   }
-}
-
-function emptyHighlights(): Highlights {
-  return {
-    viewer: PLAYER,
-    abilityTargets: [],
-    moves: [],
-    targets: [],
-    heals: [],
-    areaRange: [],
-    areaPreview: [],
-    selectedId: null,
-    activeId: null,
-    hover: null,
-    kbCursor: false,
-    previews: [],
-  };
-}
-
-function helpCard(): HTMLElement {
-  return h(
-    'details',
-    { class: 'card help' },
-    h('summary', {}, 'Como jogar'),
-    h(
-      'ul',
-      {},
-      h('li', {}, 'Cada time joga uma fase inteira: você move todas as suas unidades, depois a IA move as dela.'),
-      h('li', {}, 'Cada unidade: mover e depois 1 ação (atacar, curar, coletar, usar item ou habilidade).'),
-      h('li', {}, 'Teclas 1–5 selecionam suas unidades. Setas movem o cursor pelas casas e Espaço confirma (andar, atacar, mirar).'),
-      h('li', {}, 'Z confirma e encerra a unidade, X volta. Selecionada, a câmera fica presa nela; X solta.'),
-      h('li', {}, 'Vence quem destruir a Base (QG) inimiga ou eliminar todas as unidades. Na rodada 20, decide por pontos.'),
-      h('li', {}, 'Corpo a corpo abre o Confronto: 3 tempos. Leve tem 3 lances, Médio 2, Pesado 1 (mas bate mais forte).'),
-      h('li', {}, 'O peso define os lances. Quem não agiu ganha Prontidão (!): +1 lance ao defender.'),
-      h('li', {}, 'Ninguém vira à mão: no fim da fase do seu time, cada unidade encara o inimigo mais próximo (a setinha mostra para onde). Atacar pelo flanco dá ×1,25 de dano, pelas costas ×1,5. Os leves (Espadachim, Morteiro, Bombardeiro, Médico, Espião) ainda ganham Leituras: 1 pelo flanco, 2 pelas costas.'),
-      h('li', {}, 'Especialidades: Cavaleiro ×1,6 no flanco e ×1,7 nas costas; Espião ×2 nas costas; o escudo do Tank corta 25% do dano pela frente; o Blindado leva +15% pelo flanco e +30% pela traseira. Atirador e artilharia não atacam colados.'),
-      h('li', {}, 'Ao escolher onde andar, os números sobre os inimigos mostram o dano que você causaria daquela casa (corpo a corpo: por acerto no Confronto; tiro: dano exato).'),
-      h('li', {}, 'O Blindado anda 3 e só em terreno liso (nada de floresta, colina, ruína, lama ou barricada).'),
-      h('li', {}, 'O Bombardeiro planta minas desde o level 1 (até 3). Mina causa 8; num Blindado, 16 e ele fica imobilizado. A granada dele ignora a armadura do Blindado.'),
-      h('li', {}, 'XP: acertar ou vencer Confronto +1, abater +2, coletar ou curar +1. No level 2 a habilidade da classe é liberada.'),
-      h('li', {}, 'Nós de cor (quadradinhos = cargas): verde dá Tônico, laranja Óleo de combate, roxo Elixir de foco. A Fonte central dá qualquer um.'),
-      h('li', {}, 'Morteiro cai no começo da próxima fase de quem atirou. Granada explode na hora. A Base acerta 5 em quem encosta nela.'),
-    ),
-  );
 }

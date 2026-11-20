@@ -1,7 +1,7 @@
 {
-  "name": "tatico-steampunk",
+  "name": "trama-futsal",
   "version": "0.1.0",
-  "description": "Protótipo da Fase 1 de um jogo de ação tática em pixel art (Azul vs Vermelho).",
+  "description": "Trama Futsal: futsal tático por turnos em pixel art (Azul vs Vermelho).",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,9 +10,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "sim": "tsx scripts/simulate.ts",
-    "balance": "tsx scripts/balance.ts",
-    "tune": "tsx scripts/tune.ts"
+    "sim": "tsx scripts/simulate.ts"
   },
   "devDependencies": {
     "tsx": "^4.23.15",

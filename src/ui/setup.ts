@@ -1,157 +1,129 @@
-import { BASE_LANCES, CLASS_IDS, CLASSES, WEIGHT_LABEL } from '../core';
-import type { ClassId, Difficulty } from '../core';
+// Tela inicial: os dois elencos, as posições e a dificuldade.
+
+import { createGame, ROLES, WEIGHT_LABEL } from '../core';
+import type { Difficulty, Player, Role } from '../core';
 import { clear, h } from './dom';
-import { classIconSvg } from './icons';
-import { spriteDataUrl } from './sprites';
+import type { MatchConfig } from './game-view';
+import { portraitUrl } from './sprites';
 
-export interface MatchConfig {
-  azul: ClassId[];
-  vermelho: ClassId[];
-  difficulty: Difficulty;
-  seed: number;
-}
+const ROLE_LIST: Role[] = ['goleiro', 'fixo', 'ala', 'pivo'];
 
-export const SUGGESTED: ClassId[] = ['tank', 'espadachim', 'cavaleiro', 'atirador', 'medico'];
-
-export function randomComp(): ClassId[] {
-  const comp: ClassId[] = [];
-  while (comp.length < 5) {
-    const c = CLASS_IDS[Math.floor(Math.random() * CLASS_IDS.length)];
-    if (comp.filter((x) => x === c).length < 2) comp.push(c);
-  }
-  return comp;
-}
-
-function rangeText(id: ClassId): string {
-  const d = CLASSES[id];
-  if (d.ranged) {
-    const r = d.ranged;
-    const kind = { tiro: 'tiro', canhao: 'tiro em linha', morteiro: 'indireto', granada: 'arremesso' }[r.kind];
-    const span = r.min === r.max ? `${r.min}` : `${r.min}–${r.max}`;
-    return d.melee ? `1 e ${span} (${kind})` : `${span} (${kind})`;
-  }
-  return '1';
+function playerRow(p: Player): HTMLElement {
+  const d = ROLES[p.role];
+  return h(
+    'div',
+    { class: `roster-row ${p.team}` },
+    h('img', { src: portraitUrl(p, 3), alt: p.name }),
+    h('div', {}, h('b', {}, `#${p.number} ${p.name}`), h('div', { class: 'sub' }, `${d.name} · ${d.special}`)),
+  );
 }
 
 export function showSetup(root: HTMLElement, previous: MatchConfig | null, onStart: (c: MatchConfig) => void): void {
-  let team: ClassId[] = previous ? [...previous.azul] : [...SUGGESTED];
   let difficulty: Difficulty = previous?.difficulty ?? 'veterano';
+  const demo = createGame({ seed: 1 });
+
+  const start = () => {
+    document.removeEventListener('keydown', onKey);
+    onStart({ difficulty, seed: Math.floor(Math.random() * 2 ** 31) });
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      start();
+    }
+  };
+  document.addEventListener('keydown', onKey);
 
   const render = () => {
     clear(root);
-    const count = (c: ClassId) => team.filter((x) => x === c).length;
-    const cards = CLASS_IDS.map((id) => {
-      const d = CLASSES[id];
-      const n = count(id);
+    const team = (t: 'azul' | 'vermelho') => demo.players.filter((p) => p.team === t);
+    const roleCard = (r: Role) => {
+      const d = ROLES[r];
+      const sample = demo.players.find((p) => p.team === 'azul' && p.role === r)!;
+      const stat = (k: string, v: number, tip: string) => h('span', { title: tip }, h('i', {}, k), String(v));
       return h(
-        'button',
-        {
-          class: `class-card${n ? ' picked' : ''}`,
-          disabled: team.length >= 5 || n >= 2,
-          title: n >= 2 ? 'Máximo de 2 por classe' : 'Adicionar ao time',
-          onclick: () => {
-            if (team.length < 5 && count(id) < 2) team.push(id);
-            render();
-          },
-        },
-        h('img', { class: 'setup-sprite', src: spriteDataUrl(id, 'azul'), alt: '' }),
-        h('div', { class: 'name' }, h('span', { class: 'setup-icon' }, classIconSvg(id, 16, '#fff')), `${d.name}${n ? ` ×${n}` : ''}`),
-        h('div', { class: 'meta' }, `${d.arm[0].toUpperCase()}${d.arm.slice(1)} · ${WEIGHT_LABEL[d.weight]} · ${BASE_LANCES[d.weight]} lance(s)`),
-        h('div', { class: 'nums' }, `MOV ${d.mov} · Alcance ${rangeText(id)}`),
-        h('div', { class: 'nums' }, `HP ${d.hp} · ATQ ${d.atq} · ARM ${d.armadura} · ST ${d.stamina}`),
-        h('div', { class: 'meta' }, d.role),
+        'div',
+        { class: 'role-card' },
+        h('img', { src: portraitUrl(sample, 3), alt: d.name }),
+        h('div', { class: 'name' }, d.name, h('span', { class: 'sub' }, ` · ${WEIGHT_LABEL[d.weight]}`)),
+        h('div', { class: 'meta' }, d.blurb),
+        h(
+          'div',
+          { class: 'stats' },
+          stat('MOV', d.mov, 'Casas por fase'),
+          stat('PAS', d.pas, 'Alcance do passe'),
+          stat('DOM', d.dom, 'Domínio: lances com a bola e recepção'),
+          stat('HAB', d.hab, 'Pontos para fintas'),
+          stat('FIN', d.fin, 'Finalização: alcance e força do chute'),
+          stat('MAR', d.mar, 'Marcação: lances sem a bola'),
+          r === 'goleiro' ? stat('REF', d.ref, 'Reflexo nas defesas') : stat('FOL', d.fol, 'Fôlego'),
+        ),
+        h('div', { class: 'meta special' }, h('b', {}, d.special), ` — ${d.specialText}`),
       );
-    });
-
+    };
     root.append(
       h(
         'div',
         { class: 'setup' },
-        h('h2', {}, 'Monte o time Azul'),
+        h('h1', { class: 'logo' }, 'TRAMA ', h('span', {}, 'FUTSAL')),
         h(
           'p',
           { class: 'lead' },
-          'Escolha 5 unidades (no máximo 2 da mesma classe). O Vermelho é controlado pela máquina, com um time sorteado. Cada classe libera sua habilidade no level 2. Protótipo: sem construções ainda.',
+          'Futsal tático por turnos: ande, passe, drible, chute. Cada posição joga diferente. Você é o Azul; a máquina comanda o Vermelho. Dois tempos de 8 rodadas.',
         ),
-        h('div', { class: 'class-grid' }, cards),
         h(
           'div',
-          { class: 'team-row' },
-          h('b', {}, `Seu time (${team.length}/5):`),
-          team.map((c, i) =>
+          { class: 'rosters' },
+          h('div', { class: 'roster azul' }, h('h3', {}, 'Azul (você)'), team('azul').map(playerRow)),
+          h('div', { class: 'vs-big' }, '×'),
+          h('div', { class: 'roster vermelho' }, h('h3', {}, 'Vermelho (IA)'), team('vermelho').map(playerRow)),
+        ),
+        h('h3', {}, 'As posições'),
+        h('div', { class: 'role-grid' }, ROLE_LIST.map(roleCard)),
+        h(
+          'div',
+          { class: 'rules' },
+          h('h3', {}, 'Como se joga'),
+          h(
+            'ul',
+            {},
+            h('li', {}, 'Na sua fase, cada jogador anda e depois age uma vez: passar, chutar, driblar ou desarmar.'),
+            h(
+              'li',
+              {},
+              'Com a bola, quem encosta num marcador para: daí só sai no drible. Passes rasteiros são cortados por quem está perto da linha; o passe alto (A) passa por cima, mas a recepção fica disputada.',
+            ),
+            h(
+              'li',
+              {},
+              'Drible e desarme viram um Duelo de 3 tempos: Arrancada/Bote vence Finta, Proteger/Fechar vence Arrancada/Bote, Finta vence Proteger e quem espera.',
+            ),
+            h(
+              'li',
+              {},
+              'No chute você escolhe o canto e o goleiro escolhe o lado. A partir da 6ª falta do time no tempo, toda falta é tiro livre direto do 10 m.',
+            ),
+            h('li', {}, 'Goleiro com a bola tem que soltar na fase seguinte (regra dos 4 segundos).'),
+          ),
+        ),
+        h(
+          'div',
+          { class: 'start-row' },
+          h('span', {}, 'Dificuldade: '),
+          (['recruta', 'veterano'] as Difficulty[]).map((d) =>
             h(
               'button',
               {
-                class: 'chip',
-                title: 'Remover',
+                class: difficulty === d ? 'on' : '',
                 onclick: () => {
-                  team.splice(i, 1);
+                  difficulty = d;
                   render();
                 },
               },
-              `${CLASSES[c].name} ✕`,
+              d === 'recruta' ? 'Recruta' : 'Veterano',
             ),
           ),
-          team.length === 0 ? h('span', { class: 'meta' }, 'nenhuma unidade ainda') : null,
-        ),
-        h(
-          'div',
-          { class: 'setup-controls' },
-          h(
-            'button',
-            {
-              onclick: () => {
-                team = [...SUGGESTED];
-                render();
-              },
-            },
-            'Time sugerido',
-          ),
-          h(
-            'button',
-            {
-              onclick: () => {
-                team = randomComp();
-                render();
-              },
-            },
-            'Sortear',
-          ),
-          h(
-            'button',
-            {
-              onclick: () => {
-                team = [];
-                render();
-              },
-            },
-            'Limpar',
-          ),
-          h('span', { class: 'meta' }, 'Dificuldade da IA:'),
-          (() => {
-            const sel = h(
-              'select',
-              {
-                onchange: (e: Event) => {
-                  difficulty = (e.target as HTMLSelectElement).value as Difficulty;
-                },
-              },
-              h('option', { value: 'recruta' }, 'Recruta'),
-              h('option', { value: 'veterano' }, 'Veterano'),
-            );
-            sel.value = difficulty;
-            return sel;
-          })(),
-          h(
-            'button',
-            {
-              class: 'primary',
-              disabled: team.length !== 5,
-              onclick: () =>
-                onStart({ azul: [...team], vermelho: randomComp(), difficulty, seed: Math.floor(Math.random() * 2 ** 31) }),
-            },
-            'Começar partida',
-          ),
+          h('button', { class: 'primary big', onclick: start }, 'Começar partida (Enter)'),
         ),
       ),
     );

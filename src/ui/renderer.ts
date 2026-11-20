@@ -1,455 +1,927 @@
-// Desenho do tabuleiro em 2.5D, na vista girada da referência: o quadrado do mapa vira um
-// losango inclinado, com a Base Azul perto da ponta esquerda e a Vermelha na ponta oposta.
-// Colinas têm altura; árvores, torres das Bases e unidades ficam em pé, com sombra.
-// Tudo que fica em pé é desenhado de trás para a frente (pela altura na tela).
+// Quadra 2.5D do Trama Futsal: piso de madeira, linhas, gols com rede, torcida, jogadores
+// chibi e a bola. Toda jogada vira uma animação (fila de eventos) antes do jogo seguir.
 
-import { CLASSES, strikeCountdown } from '../core';
-import { spriteAnchor, spriteCanvas } from './sprites';
-import type { AttackPreview, Dir, GameEvent, GameState, Pos, Team, Terrain, Unit } from '../core';
+import { AREA_RADIUS, COURT_H, COURT_W, TEN_METER, getPlayer } from '../core';
+import type { Corner, Emote, GameEvent, GameState, Player, Pos, Team } from '../core';
+import { BALL, playerSprite, whiteSprite } from './sprites';
+import type { Frame } from './sprites';
 
-/**
- * Eixos da projeção (pixels por casa): andar +1 em x vai para a direita e um pouco para cima;
- * andar +1 em y vai para a direita e para baixo. Proporções tiradas do desenho de referência.
- */
-const AX = 23;
-const AY = -7.5;
-const BX = 23;
-const BY = 19;
-const MARGIN = 14;
-const MAX_ZOOM = 3;
-/** Quanto o tabuleiro se desloca com o mouse quando não há zoom (pixels). */
-const PARALLAX_BOARD = { x: 16, y: 10 };
-/** Engrenagens do fundo: posição (fração da tela), raio e velocidade de giro. */
-const BG_GEARS: [number, number, number, number][] = [
-  [0.08, 0.14, 46, 0.00012],
-  [0.17, 0.07, 26, -0.0002],
-  [0.9, 0.12, 60, -0.0001],
-  [0.97, 0.3, 30, 0.00018],
-  [0.12, 0.88, 38, 0.00014],
-  [0.86, 0.9, 50, -0.00011],
-];
-/** Espaço acima da ponta de cima para torres e unidades em pé. */
-const HEADROOM = 50;
-/** Tamanho de cada pixel dos sprites, em pixels do tabuleiro. */
-const SPRITE_SCALE = 1.5;
+type Pt = { x: number; y: number };
 
-const TEAM_COLOR = { azul: '#3d7be0', vermelho: '#d4483b' } as const;
-const TEAM_LIGHT = { azul: '#6fa2f0', vermelho: '#ea7b6f' } as const;
-const TEAM_DARK = { azul: '#1f3f73', vermelho: '#6e231c' } as const;
+// Projeção: o comprimento da quadra corre para a direita (subindo um pouco), a largura desce.
+const AX = 30;
+const AY = -8;
+const BX = 12;
+const BY = 17;
+const MARGIN_X = 40;
+const HEADROOM = 120;
+const FOOTROOM = 50;
+const MAX_ZOOM = 2.6;
+const SCALE = 1.6;
+const PARALLAX = { x: 14, y: 8 };
 
-const ELEVATION: Partial<Record<Terrain, number>> = { colina: 9 };
-const NODE_COLOR = { verde: '#6fd58a', roxo: '#b88cf0', laranja: '#f0a050', prisma: '#e6e6ff' } as const;
-const DIR_VEC: Record<Dir, [number, number]> = { N: [0, -1], S: [0, 1], E: [1, 0], W: [-1, 0] };
+export const TEAM_COLOR: Record<Team, string> = {
+  azul: '#2f6fd8',
+  vermelho: '#d63a2f',
+};
+const TEAM_LIGHT: Record<Team, string> = {
+  azul: '#7fb0ff',
+  vermelho: '#ff8a7a',
+};
+
+export interface TargetMark {
+  x: number;
+  y: number;
+  kind: 'passe' | 'passe-alto' | 'drible' | 'desarme' | 'chute';
+  tone: 'bom' | 'risco' | 'ruim';
+  label?: string;
+}
 
 export interface Highlights {
-  /** Time do jogador: só as minas dele aparecem. */
-  viewer: Team;
-  abilityTargets: Pos[];
   moves: Pos[];
-  targets: Pos[];
-  heals: Pos[];
-  areaRange: Pos[];
-  areaPreview: Pos[];
+  targets: TargetMark[];
+  /** Linha do passe sob o cursor. */
+  passLine: {
+    from: Pos;
+    to: Pos;
+    tone: 'bom' | 'risco' | 'ruim';
+    alto: boolean;
+  } | null;
+  /** Casas onde o adversário corta passe rasteiro. */
+  cutZones: Pos[];
+  /** Chute sob o cursor: mostra o gol alvo e a chance. */
+  shot: { team: Team; text: string } | null;
   selectedId: string | null;
   activeId: string | null;
   hover: Pos | null;
-  /** O cursor está sendo movido pelo teclado (desenho mais forte). */
   kbCursor: boolean;
-  /** Dano previsto sobre cada alvo atacável (da casa atual ou da casa de movimento escolhida). */
-  previews: AttackPreview[];
 }
 
-/** Cristal trocando de lugar por um wormhole. */
-interface Warp {
-  from: Pos;
-  to: Pos;
-  color: keyof typeof NODE_COLOR;
+export const emptyHighlights = (): Highlights => ({
+  moves: [],
+  targets: [],
+  passLine: null,
+  cutZones: [],
+  shot: null,
+  selectedId: null,
+  activeId: null,
+  hover: null,
+  kbCursor: false,
+});
+
+interface Disp {
+  x: number;
+  y: number;
+  h: number;
+  rot: number;
+  frame: Frame | null;
+  flash: boolean;
+  dizzy: boolean;
+  /** Olhar para a esquerda da tela. */
+  flip: boolean | null;
+  back: boolean | null;
+}
+
+interface BallDisp {
+  x: number;
+  y: number;
+  h: number;
+  /** Com quem a bola está na tela (segue os pés), ou null quando voa. */
+  owner: string | null;
+  spin: number;
+  trail: boolean;
+}
+
+interface Anim {
+  dur: number;
+  t0: number;
+  step: (t: number, now: number) => void;
+  end?: () => void;
+}
+
+interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  t0: number;
+  color: string;
+  size: number;
+  g: number;
+}
+
+interface Banner {
+  text: string;
+  sub?: string;
+  color: string;
+  t0: number;
+  dur: number;
+  big: boolean;
+}
+
+interface Balloon {
+  id: string;
+  emote: Emote;
   t0: number;
 }
-/** Tempos da animação do wormhole (ms desde o início): vórtices [abre, aberto, fecha, fechado]. */
-const WARP = {
-  sinkVoid: [0, 260, 820, 1060],
-  sink: [180, 860],
-  emergeVoid: [760, 1020, 1500, 1760],
-  emerge: [980, 1560],
-  total: 1800,
-  stagger: 110,
-} as const;
 
-interface FloatText {
+interface Float {
   x: number;
   y: number;
   text: string;
   color: string;
   t0: number;
 }
-interface Flash {
-  cells: Pos[];
-  t0: number;
-}
-interface Shot {
-  from: Pos;
-  to: Pos;
-  t0: number;
-}
-
-export interface MoveAnim {
-  unitId: string;
-  path: Pos[];
-  t0: number;
-  stepMs: number;
-}
-
-type Pt = { x: number; y: number };
 
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
-  private floats: FloatText[] = [];
-  private flashes: Flash[] = [];
-  private shots: Shot[] = [];
-  private warps: Warp[] = [];
   private ox: number;
   private oy: number;
-  anim: MoveAnim | null = null;
-  /** Câmera: zoom e deslocamento (pixels do canvas). */
+  private floor: HTMLCanvasElement;
   cam = { z: 1, tx: 0, ty: 0 };
   private zTarget = 1;
-  /** Onde o cursor está no canvas (0–1), ou null fora dele; e a versão suavizada que a câmera segue. */
   private pointerFrac: Pt | null = null;
   private follow: Pt = { x: 0.5, y: 0.5 };
-  private lastNow = 0;
-  /** Unidade em que a câmera está presa (centralizada), ou null. */
   private lockId: string | null = null;
-  /** Câmera parada onde está (depois de confirmar uma ação), até soltar com X. */
   private held: { tx: number; ty: number } | null = null;
-  /**
-   * Escolha da casa de movimento: com a câmera presa na unidade, ela passa a seguir suavemente o
-   * mouse (deslocando-se para o lado em que ele está) ou a casa escolhida com as setas.
-   */
-  private aimOn = false;
-  private aimSrc: 'mouse' | 'key' | null = null;
-  private aimCell: Pos | null = null;
-  private aimFrac: Pt = { x: 0.5, y: 0.5 };
-  /** Onde o mouse estava quando a mira começou (o mouse só assume depois de andar um pouco). */
-  private aimStart: Pt | null = null;
-  private lastPointer: Pt | null = null;
+  private lastNow = 0;
+  private shake = 0;
+
+  private disp = new Map<string, Disp>();
+  private ball: BallDisp = {
+    x: 0,
+    y: 0,
+    h: 0,
+    owner: null,
+    spin: 0,
+    trail: false,
+  };
+  private queue: (() => Anim[])[] = [];
+  private running: Anim[] = [];
+  private particles: Particle[] = [];
+  private banners: Banner[] = [];
+  private balloons: Balloon[] = [];
+  private floats: Float[] = [];
+  private trail: { x: number; y: number; h: number; t: number }[] = [];
+  private netBulge: { team: Team; y: number; t0: number } | null = null;
+  private crowdSeed: {
+    x: number;
+    y: number;
+    c: string;
+    ph: number;
+    row: number;
+  }[] = [];
+  private cheer = 0;
 
   constructor(
     readonly canvas: HTMLCanvasElement,
     s: GameState,
   ) {
-    this.ox = MARGIN;
-    this.oy = HEADROOM - s.width * AY;
-    canvas.width = Math.ceil(MARGIN * 2 + s.width * AX + s.height * BX);
-    canvas.height = Math.ceil(this.oy + s.height * BY + MARGIN);
+    this.ox = MARGIN_X;
+    this.oy = HEADROOM - COURT_W * AY;
+    canvas.width = Math.ceil(MARGIN_X * 2 + COURT_W * AX + COURT_H * BX);
+    canvas.height = Math.ceil(this.oy + COURT_H * BY + FOOTROOM);
     this.ctx = canvas.getContext('2d')!;
+    this.floor = this.buildFloor();
+    for (const p of s.players) this.disp.set(p.id, this.freshDisp(p));
+    const h = getPlayer(s, s.holder);
+    this.ball = {
+      x: h.x + 0.5,
+      y: h.y + 0.5,
+      h: 0,
+      owner: h.id,
+      spin: 0,
+      trail: false,
+    };
+    this.buildCrowd();
+  }
+
+  private freshDisp(p: Player): Disp {
+    return {
+      x: p.x + 0.5,
+      y: p.y + 0.5,
+      h: 0,
+      rot: 0,
+      frame: null,
+      flash: false,
+      dizzy: false,
+      flip: null,
+      back: null,
+    };
   }
 
   // ---------- Projeção ----------
 
-  /** Ponto do mapa (fx, fy em casas, h em pixels de altura) → tela. */
   private P(fx: number, fy: number, h = 0): Pt {
-    return { x: this.ox + fx * AX + fy * BX, y: this.oy + fx * AY + fy * BY - h };
+    return {
+      x: this.ox + fx * AX + fy * BX,
+      y: this.oy + fx * AY + fy * BY - h,
+    };
   }
 
-  private elev(s: GameState, x: number, y: number): number {
-    return ELEVATION[s.terrain[y][x]] ?? 0;
+  private quad(x: number, y: number): Pt[] {
+    return [this.P(x, y), this.P(x + 1, y), this.P(x + 1, y + 1), this.P(x, y + 1)];
   }
 
-  private quad(x: number, y: number, h: number): Pt[] {
-    return [this.P(x, y, h), this.P(x + 1, y, h), this.P(x + 1, y + 1, h), this.P(x, y + 1, h)];
-  }
-
-  private poly(pts: Pt[], fill?: string, stroke?: string, lw = 1): void {
-    const ctx = this.ctx;
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-    ctx.closePath();
+  private poly(c: CanvasRenderingContext2D, pts: Pt[], fill?: string, stroke?: string, lw = 1): void {
+    c.beginPath();
+    c.moveTo(pts[0].x, pts[0].y);
+    for (const p of pts.slice(1)) c.lineTo(p.x, p.y);
+    c.closePath();
     if (fill) {
-      ctx.fillStyle = fill;
-      ctx.fill();
+      c.fillStyle = fill;
+      c.fill();
     }
     if (stroke) {
-      ctx.strokeStyle = stroke;
-      ctx.lineWidth = lw;
-      ctx.stroke();
+      c.strokeStyle = stroke;
+      c.lineWidth = lw;
+      c.stroke();
     }
   }
 
-  /** Caixa em pé sobre uma área do chão (frações da casa), com topo, frente e lado esquerdo. */
-  private box(x0: number, y0: number, x1: number, y1: number, base: number, height: number, top: string, front: string, side: string): void {
-    const t = [this.P(x0, y0, base + height), this.P(x1, y0, base + height), this.P(x1, y1, base + height), this.P(x0, y1, base + height)];
-    const b = [this.P(x0, y1, base), this.P(x1, y1, base)];
-    const bl = this.P(x0, y0, base);
-    this.poly([t[3], t[2], b[1], b[0]], front);
-    this.poly([t[0], t[3], b[0], bl], side);
-    this.poly(t, top);
+  // ---------- Fila de animações ----------
+
+  /** Enfileira as animações dos eventos do jogo (a tela anda atrás das regras). */
+  pushEvents(events: GameEvent[], s: GameState): void {
+    for (const e of events) this.queue.push(() => this.animFor(e, s));
   }
 
-  // ---------- Eventos visuais ----------
+  get busy(): boolean {
+    return this.queue.length > 0 || this.running.length > 0;
+  }
 
-  pushEvents(events: GameEvent[], now: number): void {
-    for (const e of events) {
-      if (e.kind === 'dano') this.floats.push({ x: e.x, y: e.y, text: `-${e.amount}`, color: '#ffb4a8', t0: now });
-      else if (e.kind === 'cura') this.floats.push({ x: e.x, y: e.y, text: `+${e.amount}`, color: '#9ff0a8', t0: now });
-      else if (e.kind === 'abate') this.floats.push({ x: e.x, y: e.y, text: 'abatido', color: '#ffffff', t0: now + 150 });
-      else if (e.kind === 'impacto') this.flashes.push({ cells: e.cells, t0: now });
-      else if (e.kind === 'tiro') this.shots.push({ from: e.from, to: e.to, t0: now });
-      else if (e.kind === 'texto') this.floats.push({ x: e.x, y: e.y, text: e.text, color: e.color, t0: now + 100 });
-      else if (e.kind === 'portal') {
-        // Um cristal depois do outro, para dar para acompanhar.
-        const n = this.warps.filter((w) => w.t0 >= now).length;
-        this.warps.push({ from: e.from, to: e.to, color: e.color, t0: now + n * WARP.stagger });
-      }
+  /** Espera a fila de animações acabar. */
+  idle(): Promise<void> {
+    return new Promise((resolve) => {
+      const check = () => (this.busy ? requestAnimationFrame(check) : resolve());
+      check();
+    });
+  }
+
+  private d(id: string): Disp {
+    return this.disp.get(id)!;
+  }
+
+  private animFor(e: GameEvent, s: GameState): Anim[] {
+    switch (e.kind) {
+      case 'move':
+        return [this.animMove(e.id, e.path, e.withBall, e.sprint)];
+      case 'passe':
+        return this.animPass(e, s);
+      case 'chute':
+        return this.animShot(e, s);
+      case 'duelo':
+        return this.animDuel(e);
+      case 'gol':
+        return this.animGoal(e.team, e.scorerId, s);
+      case 'falta':
+        return this.animFoul(e.byId, e.onId, e.count, e.direto);
+      case 'reset':
+        return [this.animReset(e.positions, e.holderId)];
+      case 'apito':
+        this.banners.push({
+          text: e.text,
+          color: '#ffffff',
+          t0: performance.now(),
+          dur: e.long ? 1500 : 1100,
+          big: !!e.long,
+        });
+        return [{ dur: e.long ? 900 : 500, t0: 0, step: () => {} }];
+      case 'emote':
+        this.balloons.push({ id: e.id, emote: e.emote, t0: performance.now() });
+        return [];
+      case 'texto':
+        this.floats.push({
+          x: e.x,
+          y: e.y,
+          text: e.text,
+          color: e.color,
+          t0: performance.now(),
+        });
+        return [];
     }
   }
 
-  /** Posição desenhada da unidade (interpolada durante a animação de movimento). */
-  private drawPos(u: Unit, now: number): { x: number; y: number } {
-    const a = this.anim;
-    if (!a || a.unitId !== u.id || a.path.length < 2) return { x: u.x, y: u.y };
-    const t = Math.max(0, (now - a.t0) / a.stepMs);
-    const i = Math.floor(t);
-    if (i >= a.path.length - 1) return { x: u.x, y: u.y };
-    const f = t - i;
-    const p = a.path[i];
-    const q = a.path[i + 1];
-    return { x: p.x + (q.x - p.x) * f, y: p.y + (q.y - p.y) * f };
-  }
-
-  // ---------- Quadro ----------
-
-  draw(s: GameState, h: Highlights, now: number): void {
-    const ctx = this.ctx;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    this.stepCamera(s, now);
-    this.drawBackground(now);
-    ctx.setTransform(this.cam.z, 0, 0, this.cam.z, this.cam.tx, this.cam.ty);
-    this.drawBoardShadow(s);
-    this.drawGround(s, now);
-
-    const fill = (cells: Pos[], color: string) => {
-      for (const c of cells) this.poly(this.quad(c.x, c.y, this.elev(s, c.x, c.y)), color);
+  private animMove(id: string, path: Pos[], withBall: boolean, sprint: boolean): Anim {
+    const d = this.d(id);
+    const per = sprint ? 85 : 120;
+    const pts = path.map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+    let lastStep = -1;
+    return {
+      dur: Math.max(1, pts.length - 1) * per,
+      t0: 0,
+      step: (t) => {
+        const f = t * (pts.length - 1);
+        const i = Math.min(pts.length - 2, Math.floor(f));
+        const k = f - i;
+        const a = pts[i];
+        const b = pts[i + 1] ?? a;
+        d.x = a.x + (b.x - a.x) * k;
+        d.y = a.y + (b.y - a.y) * k;
+        d.frame = Math.floor(f * 2) % 2 ? 'run1' : 'run2';
+        d.h = Math.abs(Math.sin(f * Math.PI)) * 3;
+        this.faceTowards(d, b.x - a.x, b.y - a.y);
+        if (i !== lastStep) {
+          lastStep = i;
+          this.dust(d.x, d.y, sprint ? 5 : 3);
+        }
+        if (withBall) {
+          // A bola vai colada no pé, um pouco à frente, quicando a cada passo.
+          this.ball.owner = null;
+          const lead = 0.38 + 0.12 * Math.sin(f * Math.PI * 2);
+          const dx = b.x - a.x || 0.0001;
+          const dy = b.y - a.y;
+          const n = Math.hypot(dx, dy) || 1;
+          this.ball.x = d.x + (dx / n) * lead;
+          this.ball.y = d.y + (dy / n) * lead + 0.05;
+          this.ball.h = Math.abs(Math.sin(f * Math.PI * 2)) * 2;
+          this.ball.spin += 0.5;
+        }
+      },
+      end: () => {
+        d.frame = null;
+        d.h = 0;
+        if (withBall) this.ball.owner = id;
+      },
     };
-    const outline = (cells: Pos[], color: string) => {
-      for (const c of cells) this.poly(this.quad(c.x, c.y, this.elev(s, c.x, c.y)), undefined, color, 2);
-    };
-    fill(h.areaRange, 'rgba(255, 170, 60, 0.12)');
-    fill(h.moves, 'rgba(70, 145, 255, 0.45)');
-    outline(h.moves, 'rgba(150, 200, 255, 0.35)');
-    fill(h.heals, 'rgba(110, 230, 140, 0.34)');
-    fill(h.areaPreview, 'rgba(255, 150, 40, 0.5)');
-    fill(h.targets, 'rgba(255, 80, 70, 0.25)');
-    outline(h.targets, 'rgba(255, 110, 100, 0.95)');
-    fill(h.abilityTargets, 'rgba(180, 120, 255, 0.35)');
-    outline(h.abilityTargets, 'rgba(210, 165, 255, 0.95)');
-    this.drawStrikes(s, now);
-    this.drawWarpVoids(s, now);
-    this.drawMines(s, h);
-    if (h.hover) {
-      const q = this.quad(h.hover.x, h.hover.y, this.elev(s, h.hover.x, h.hover.y));
-      if (h.kbCursor) {
-        const pulse = 0.55 + 0.35 * Math.sin(now / 160);
-        this.poly(q, `rgba(255, 210, 90, ${0.12 + 0.1 * pulse})`, `rgba(255, 210, 90, ${pulse + 0.1})`, 2.5);
-      } else {
-        this.poly(q, 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.75)', 1.5);
-      }
-    }
-    this.drawLevelGlows(s, now);
-
-    this.drawObjects(s, h, now);
-    this.drawNodeSparks(s, now);
-    this.drawEffects(s, now);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.drawPreviews(s, h);
   }
 
-  /** Etiquetas de dano previsto sobre os alvos (em pixels de tela, sempre legíveis). */
-  private drawPreviews(s: GameState, h: Highlights): void {
-    if (!h.previews.length) return;
-    const ctx = this.ctx;
-    const { z, tx, ty } = this.cam;
-    for (const p of h.previews) {
-      const lift = p.kind === 'base' ? 58 : 50;
-      const w = this.P(p.x + 0.5, p.y + 0.5, this.elev(s, p.x, p.y) + lift);
-      const sx = w.x * z + tx;
-      const sy = w.y * z + ty;
-      const tone =
-        p.kind === 'base' ? '#ff8a7a' : p.mult < 1 ? '#8fb3ff' : p.side === 'costas' ? '#ff8a3d' : p.side === 'flanco' ? '#ffd25a' : '#e6e6ee';
-      const main = `${p.kind === 'tiro' ? '◎' : p.kind === 'base' ? '⚑' : '⚔'} ${p.dmg}`;
-      const tag =
-        p.kind === 'base'
-          ? 'Base'
-          : p.mult < 1
-            ? `escudo ×${fmt(p.mult)}`
-            : p.side === 'frente'
-              ? p.kind === 'melee' ? 'por acerto' : 'frente'
-              : `${p.side} ×${fmt(p.mult)}`;
-      ctx.font = 'bold 13px system-ui, sans-serif';
-      const mw = ctx.measureText(main).width;
-      ctx.font = '600 10px system-ui, sans-serif';
-      const tw = ctx.measureText(tag).width;
-      const bw = Math.max(mw, tw) + 14;
-      const bh = 32;
-      const x0 = sx - bw / 2;
-      const y0 = sy - bh - 6;
-      ctx.fillStyle = 'rgba(18, 16, 24, 0.9)';
-      ctx.strokeStyle = tone;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.roundRect(x0, y0, bw, bh, 6);
-      ctx.fill();
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(sx - 5, y0 + bh);
-      ctx.lineTo(sx + 5, y0 + bh);
-      ctx.lineTo(sx, y0 + bh + 6);
-      ctx.closePath();
-      ctx.fillStyle = tone;
-      ctx.fill();
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = tone;
-      ctx.font = 'bold 13px system-ui, sans-serif';
-      ctx.fillText(main, sx, y0 + 11);
-      ctx.font = '600 10px system-ui, sans-serif';
-      ctx.fillStyle = 'rgba(230, 230, 240, 0.85)';
-      ctx.fillText(tag, sx, y0 + 24);
+  private faceTowards(d: Disp, dx: number, dy: number): void {
+    // Na tela: +x anda para a direita (e sobe), +y desce (e vai um pouco para a direita).
+    const sx = dx * AX + dy * BX;
+    const sy = dx * AY + dy * BY;
+    if (Math.abs(sx) > 0.01) d.flip = sx < 0;
+    if (Math.abs(sy) > 0.01) d.back = sy < 0;
+  }
+
+  private animPass(e: Extract<GameEvent, { kind: 'passe' }>, s: GameState): Anim[] {
+    const from = this.d(e.fromId);
+    const to = this.d(e.toId);
+    const start = { x: from.x, y: from.y };
+    const endPt = { x: to.x, y: to.y };
+    const dist = Math.hypot(endPt.x - start.x, endPt.y - start.y);
+    const dur = Math.max(260, dist * (e.alto ? 85 : 55));
+    const kick: Anim = {
+      dur: 160,
+      t0: 0,
+      step: (t) => {
+        from.frame = 'kick';
+        this.faceTowards(from, endPt.x - start.x, endPt.y - start.y);
+        from.h = Math.sin(t * Math.PI) * 2;
+      },
+      end: () => {
+        from.frame = null;
+        this.ball.owner = null;
+      },
+    };
+    const fly: Anim = {
+      dur,
+      t0: 0,
+      step: (t) => {
+        this.ball.owner = null;
+        // O rasteiro sai forte e perde velocidade; o alto viaja por igual.
+        const ease = e.alto ? t : 1 - (1 - t) * (1 - t);
+        this.ball.x = start.x + (endPt.x - start.x) * ease;
+        this.ball.y = start.y + (endPt.y - start.y) * ease;
+        this.ball.h = e.alto ? Math.sin(Math.PI * t) * (26 + dist * 5) : 0;
+        this.ball.spin += e.alto ? 0.25 : 0.6;
+        this.ball.trail = e.alto;
+        // Quem recebe se vira para a bola.
+        this.faceTowards(to, start.x - endPt.x, start.y - endPt.y);
+      },
+      end: () => {
+        this.ball.trail = false;
+        this.ball.owner = e.toId;
+        if (e.result === 'cortado') {
+          to.flash = true;
+          this.burst(endPt.x, endPt.y, 10, '#ffffff', 8);
+          setTimeout(() => (to.flash = false), 140);
+        }
+      },
+    };
+    void s;
+    return [kick, fly];
+  }
+
+  private goalPoint(team: Team, corner: Corner): { x: number; y: number; h: number } {
+    // `team` = quem chuta; o gol alvo fica do outro lado.
+    const x = team === 'azul' ? COURT_W + 0.35 : -0.35;
+    const left = team === 'azul' ? -1 : 1; // "esquerda" do ponto de vista de quem chuta
+    const off = corner === 'meio' ? 0 : corner === 'esq' ? left * 0.62 : -left * 0.62;
+    return { x, y: COURT_H / 2 + off, h: corner === 'meio' ? 18 : 10 };
+  }
+
+  private animShot(e: Extract<GameEvent, { kind: 'chute' }>, s: GameState): Anim[] {
+    const sh = this.d(e.shooterId);
+    const start = { x: sh.x, y: sh.y };
+    const tgt = this.goalPoint(e.team, e.corner);
+    const keeper = e.keeperId ? this.d(e.keeperId) : null;
+    const kStart = keeper ? { x: keeper.x, y: keeper.y } : null;
+    const blocker = e.blockerId ? this.d(e.blockerId) : null;
+    let end = tgt;
+    if (e.result === 'bloqueio' && blocker) end = { x: blocker.x, y: blocker.y, h: 6 };
+    if (e.result === 'defesa' && keeper && e.dive) {
+      const dp = this.goalPoint(e.team, e.dive);
+      end = { x: e.team === 'azul' ? COURT_W - 0.5 : 0.5, y: dp.y, h: 12 };
     }
+    const dist = Math.hypot(end.x - start.x, end.y - start.y);
+    const windup: Anim = {
+      dur: 240,
+      t0: 0,
+      step: (t) => {
+        sh.frame = t < 0.6 ? 'run2' : 'kick';
+        sh.h = t > 0.6 ? 3 : 0;
+        this.faceTowards(sh, end.x - start.x, end.y - start.y);
+      },
+      end: () => {
+        this.ball.owner = null;
+        this.shake = Math.max(this.shake, 3);
+        this.burst(start.x, start.y, 6, '#ffffff', 6);
+      },
+    };
+    const fly: Anim = {
+      dur: Math.max(220, dist * 32),
+      t0: 0,
+      step: (t) => {
+        this.ball.owner = null;
+        this.ball.trail = true;
+        this.ball.x = start.x + (end.x - start.x) * t;
+        this.ball.y = start.y + (end.y - start.y) * t;
+        this.ball.h = end.h * t + Math.sin(Math.PI * t) * 8;
+        this.ball.spin += 1.2;
+        if (keeper && kStart && e.dive) {
+          // O goleiro salta para o lado escolhido.
+          const dp = this.goalPoint(e.team, e.dive);
+          const k = Math.min(1, Math.max(0, (t - 0.25) / 0.6));
+          keeper.y = kStart.y + (dp.y - kStart.y) * k;
+          keeper.x = kStart.x + ((e.team === 'azul' ? COURT_W - 0.6 : 0.6) - kStart.x) * k * 0.5;
+          const dir = dp.y > kStart.y + 0.1 ? 1 : dp.y < kStart.y - 0.1 ? -1 : 0;
+          keeper.rot = dir * 1.25 * k;
+          keeper.h = Math.sin(Math.PI * k) * (dir ? 12 : 20);
+          keeper.frame = dir ? 'arms' : 'arms';
+        }
+      },
+      end: () => {
+        this.ball.trail = false;
+        sh.frame = null;
+        sh.h = 0;
+      },
+    };
+    const after: Anim = {
+      dur: e.result === 'gol' ? 380 : 520,
+      t0: 0,
+      step: (t) => {
+        if (e.result === 'gol') {
+          // A bola estufa a rede.
+          this.ball.x = end.x + (e.team === 'azul' ? 0.25 : -0.25) * t;
+          this.ball.h = end.h * (1 - t);
+          if (!this.netBulge)
+            this.netBulge = {
+              team: e.team === 'azul' ? 'vermelho' : 'azul',
+              y: end.y,
+              t0: performance.now(),
+            };
+        } else if (e.result === 'defesa' && keeper) {
+          this.ball.x = keeper.x;
+          this.ball.y = keeper.y;
+          this.ball.h = 10 + keeper.h;
+          if (t > 0.5) {
+            keeper.rot *= 0.85;
+            keeper.h *= 0.8;
+          }
+        } else if (blocker) {
+          // Bate no defensor e cai no pé dele.
+          this.ball.x = blocker.x + 0.3 * (1 - t);
+          this.ball.y = blocker.y;
+          this.ball.h = Math.abs(Math.sin(t * Math.PI * 2)) * 10 * (1 - t);
+          blocker.flash = t < 0.25;
+        }
+      },
+      end: () => {
+        if (keeper) {
+          keeper.rot = 0;
+          keeper.h = 0;
+          keeper.frame = null;
+        }
+        if (blocker) blocker.flash = false;
+        if (e.result === 'defesa') {
+          this.ball.owner = e.keeperId;
+          this.banners.push({
+            text: 'DEFESAÇA!',
+            color: '#ffe14d',
+            t0: performance.now(),
+            dur: 900,
+            big: false,
+          });
+        } else if (e.result === 'bloqueio') {
+          this.ball.owner = e.blockerId ?? null;
+          this.banners.push({
+            text: 'Bloqueio!',
+            color: '#ffffff',
+            t0: performance.now(),
+            dur: 800,
+            big: false,
+          });
+        }
+      },
+    };
+    void s;
+    return [windup, fly, after];
+  }
+
+  private animDuel(e: Extract<GameEvent, { kind: 'duelo' }>): Anim[] {
+    const h = this.d(e.holderId);
+    const o = this.d(e.otherId);
+    const hs = { x: h.x, y: h.y };
+    const os = { x: o.x, y: o.y };
+    if (e.result === 'passou' && e.to) {
+      const to = { x: e.to.x + 0.5, y: e.to.y + 0.5 };
+      // Contorna o marcador em arco, com a bola indo por um lado e o jogador pelo outro.
+      const mid = { x: (hs.x + to.x) / 2, y: (hs.y + to.y) / 2 };
+      const nx = -(to.y - hs.y);
+      const ny = to.x - hs.x;
+      const n = Math.hypot(nx, ny) || 1;
+      return [
+        {
+          dur: 520,
+          t0: 0,
+          step: (t) => {
+            const bulge = Math.sin(Math.PI * t) * 0.7;
+            h.x = hs.x + (to.x - hs.x) * t + (nx / n) * bulge;
+            h.y = hs.y + (to.y - hs.y) * t + (ny / n) * bulge;
+            h.h = Math.sin(Math.PI * t) * 10;
+            h.frame = t < 0.5 ? 'run1' : 'run2';
+            this.ball.owner = null;
+            this.ball.x = mid.x + (to.x - mid.x) * t * 1.0 - (nx / n) * 0.4 * Math.sin(Math.PI * t) + (hs.x - mid.x) * (1 - t);
+            this.ball.y = mid.y + (to.y - mid.y) * t - (ny / n) * 0.4 * Math.sin(Math.PI * t) + (hs.y - mid.y) * (1 - t);
+            this.ball.h = Math.sin(Math.PI * t) * 6;
+            this.ball.spin += 0.8;
+            // O marcador gira e cai.
+            o.rot = Math.sin(Math.min(1, t * 1.6) * Math.PI) * 0.9 + (t > 0.6 ? 0.25 : 0);
+            o.dizzy = t > 0.4;
+            if (t > 0.2 && t < 0.3) this.dust(os.x, os.y, 5);
+          },
+          end: () => {
+            h.h = 0;
+            h.frame = null;
+            this.ball.owner = e.holderId;
+            o.rot = 0;
+          },
+        },
+      ];
+    }
+    if (e.result === 'roubou') {
+      return [
+        {
+          dur: 460,
+          t0: 0,
+          step: (t) => {
+            const lunge = Math.sin(Math.PI * Math.min(1, t * 1.4));
+            o.x = os.x + (hs.x - os.x) * 0.45 * lunge;
+            o.y = os.y + (hs.y - os.y) * 0.45 * lunge;
+            o.frame = 'kick';
+            o.rot = 0.2 * lunge * (hs.x > os.x ? 1 : -1);
+            if (t > 0.45) {
+              this.ball.owner = null;
+              const k = (t - 0.45) / 0.55;
+              this.ball.x = hs.x + (os.x - hs.x) * k;
+              this.ball.y = hs.y + (os.y - hs.y) * k;
+              this.ball.h = Math.sin(Math.PI * k) * 8;
+              h.rot = -0.5 * Math.sin(Math.PI * k);
+              h.dizzy = true;
+            }
+          },
+          end: () => {
+            o.x = os.x;
+            o.y = os.y;
+            o.frame = null;
+            o.rot = 0;
+            h.rot = 0;
+            this.ball.owner = e.otherId;
+            this.burst(os.x, os.y, 8, '#ffe14d', 7);
+          },
+        },
+      ];
+    }
+    if (e.result === 'falta') {
+      return [
+        {
+          dur: 600,
+          t0: 0,
+          step: (t) => {
+            const lunge = Math.sin(Math.PI * Math.min(1, t * 1.5));
+            o.x = os.x + (hs.x - os.x) * 0.5 * lunge;
+            o.y = os.y + (hs.y - os.y) * 0.5 * lunge;
+            o.rot = (hs.x > os.x ? 1 : -1) * 1.2 * Math.min(1, t * 2);
+            o.frame = 'kick';
+            h.rot = (hs.x > os.x ? 1 : -1) * 1.3 * Math.max(0, Math.min(1, (t - 0.3) * 2));
+            h.h = Math.sin(Math.PI * Math.min(1, t * 1.2)) * 8;
+          },
+          end: () => {
+            o.x = os.x;
+            o.y = os.y;
+            setTimeout(() => {
+              o.rot = 0;
+              h.rot = 0;
+              o.frame = null;
+              h.h = 0;
+            }, 450);
+          },
+        },
+      ];
+    }
+    // Manteve: os dois se empurram e quem tem a bola a protege com o corpo.
+    return [
+      {
+        dur: 360,
+        t0: 0,
+        step: (t) => {
+          const k = Math.sin(Math.PI * t);
+          o.x = os.x + (hs.x - os.x) * 0.25 * k;
+          o.y = os.y + (hs.y - os.y) * 0.25 * k;
+          h.x = hs.x - (os.x - hs.x) * 0.12 * k;
+          h.y = hs.y - (os.y - hs.y) * 0.12 * k;
+        },
+        end: () => {
+          o.x = os.x;
+          o.y = os.y;
+          h.x = hs.x;
+          h.y = hs.y;
+        },
+      },
+    ];
+  }
+
+  private animFoul(byId: string, onId: string, count: number, direto: boolean): Anim[] {
+    void byId;
+    void onId;
+    this.banners.push({
+      text: direto ? 'FALTA! Tiro livre direto' : 'FALTA!',
+      sub: `${count}ª falta do time no tempo`,
+      color: '#ffe14d',
+      t0: performance.now(),
+      dur: 1300,
+      big: false,
+    });
+    return [{ dur: 700, t0: 0, step: () => {} }];
+  }
+
+  private animGoal(team: Team, scorerId: string, s: GameState): Anim[] {
+    const sc = this.d(scorerId);
+    const p = getPlayer(s, scorerId);
+    this.banners.push({
+      text: 'GOOOL!',
+      sub: `${p.name} · ${team === 'azul' ? 'Azul' : 'Vermelho'}`,
+      color: TEAM_COLOR[team],
+      t0: performance.now(),
+      dur: 2000,
+      big: true,
+    });
+    this.shake = 9;
+    this.cheer = performance.now();
+    const gp = this.goalPoint(team, 'meio');
+    for (let i = 0; i < 70; i++) {
+      const c = [TEAM_COLOR[team], TEAM_LIGHT[team], '#ffffff', '#ffe14d'][i % 4];
+      this.particles.push({
+        x: gp.x,
+        y: gp.y,
+        vx: (Math.random() - 0.5) * 6 - (team === 'azul' ? 2 : -2),
+        vy: (Math.random() - 0.5) * 4,
+        life: 1400 + Math.random() * 600,
+        t0: performance.now(),
+        color: c,
+        size: 3,
+        g: 0.6,
+      });
+    }
+    const mates = s.players.filter((q) => q.team === team && q.id !== scorerId).map((q) => this.d(q.id));
+    return [
+      {
+        dur: 1700,
+        t0: 0,
+        step: (t) => {
+          // Quem marcou pula comemorando; os colegas também.
+          sc.frame = 'arms';
+          sc.h = Math.abs(Math.sin(t * Math.PI * 5)) * 14;
+          for (const [i, m] of mates.entries()) {
+            m.frame = 'arms';
+            m.h = Math.abs(Math.sin(t * Math.PI * 4 + i)) * 7;
+          }
+        },
+        end: () => {
+          sc.frame = null;
+          sc.h = 0;
+          for (const m of mates) {
+            m.frame = null;
+            m.h = 0;
+          }
+        },
+      },
+    ];
+  }
+
+  private animReset(positions: Record<string, Pos>, holderId: string): Anim {
+    const starts = new Map<string, Pt>();
+    for (const id of Object.keys(positions)) {
+      const d = this.d(id);
+      starts.set(id, { x: d.x, y: d.y });
+    }
+    const ballStart = { x: this.ball.x, y: this.ball.y };
+    let maxDist = 0;
+    for (const [id, p] of Object.entries(positions)) {
+      const s0 = starts.get(id)!;
+      maxDist = Math.max(maxDist, Math.hypot(p.x + 0.5 - s0.x, p.y + 0.5 - s0.y));
+    }
+    const dur = Math.min(1400, 200 + maxDist * 90);
+    return {
+      dur,
+      t0: 0,
+      step: (t) => {
+        for (const [id, p] of Object.entries(positions)) {
+          const d = this.d(id);
+          const s0 = starts.get(id)!;
+          const tx = p.x + 0.5;
+          const ty = p.y + 0.5;
+          const moving = Math.hypot(tx - s0.x, ty - s0.y) > 0.1;
+          d.x = s0.x + (tx - s0.x) * t;
+          d.y = s0.y + (ty - s0.y) * t;
+          d.rot = 0;
+          d.dizzy = false;
+          d.frame = moving && t < 1 ? (Math.floor(t * 12) % 2 ? 'run1' : 'run2') : null;
+          if (moving) this.faceTowards(d, tx - s0.x, ty - s0.y);
+        }
+        const hp = positions[holderId];
+        this.ball.owner = null;
+        this.ball.x = ballStart.x + (hp.x + 0.9 - ballStart.x) * t;
+        this.ball.y = ballStart.y + (hp.y + 0.5 - ballStart.y) * t;
+        this.ball.h = Math.sin(Math.PI * t) * 20;
+      },
+      end: () => {
+        for (const id of Object.keys(positions)) {
+          const d = this.d(id);
+          d.frame = null;
+          d.flip = null;
+          d.back = null;
+        }
+        this.ball.owner = holderId;
+      },
+    };
+  }
+
+  private dust(x: number, y: number, n: number): void {
+    const now = performance.now();
+    for (let i = 0; i < n; i++) {
+      this.particles.push({
+        x: x + (Math.random() - 0.5) * 0.3,
+        y: y + 0.1,
+        vx: (Math.random() - 0.5) * 0.8,
+        vy: -Math.random() * 0.3,
+        life: 380,
+        t0: now,
+        color: 'rgba(240,225,190,0.8)',
+        size: 2,
+        g: -0.02,
+      });
+    }
+  }
+
+  private burst(x: number, y: number, n: number, color: string, speed: number): void {
+    const now = performance.now();
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(a) * speed * 0.3,
+        vy: Math.sin(a) * speed * 0.3,
+        life: 420,
+        t0: now,
+        color,
+        size: 2,
+        g: 0,
+      });
+    }
+  }
+
+  private stepAnims(s: GameState, now: number): void {
+    // Quando nada está animando, a tela acompanha o estado do jogo.
+    if (!this.running.length && this.queue.length) {
+      const next = this.queue.shift()!;
+      this.running = next().map((a) => ({ ...a, t0: 0 }));
+      if (!this.running.length) return this.stepAnims(s, now);
+    }
+    if (this.running.length) {
+      const a = this.running[0];
+      if (!a.t0) a.t0 = now;
+      const t = Math.min(1, (now - a.t0) / a.dur);
+      a.step(t, now);
+      if (t >= 1) {
+        a.end?.();
+        this.running.shift();
+      }
+      return;
+    }
+    // Sem animação: cada um vai suavemente para onde o jogo diz que está.
+    for (const p of s.players) {
+      const d = this.disp.get(p.id) ?? this.freshDisp(p);
+      this.disp.set(p.id, d);
+      d.x += (p.x + 0.5 - d.x) * 0.35;
+      d.y += (p.y + 0.5 - d.y) * 0.35;
+      d.rot *= 0.8;
+      if (Math.abs(d.rot) < 0.01) d.rot = 0;
+      d.h *= 0.7;
+      if (!p.unbalanced) d.dizzy = false;
+      else d.dizzy = true;
+    }
+    if (this.ball.owner !== s.holder) this.ball.owner = s.holder;
   }
 
   // ---------- Câmera ----------
 
-  get zoom(): number {
-    return this.cam.z;
-  }
-
-  /** Converte coordenadas da página em pixels do canvas (sem a câmera). */
   toCanvas(clientX: number, clientY: number): Pt {
     const r = this.canvas.getBoundingClientRect();
-    return { x: ((clientX - r.left) / r.width) * this.canvas.width, y: ((clientY - r.top) / r.height) * this.canvas.height };
-  }
-
-  /** Posição do cursor (coordenadas da página), ou null quando sai do tabuleiro. */
-  pointer(clientX: number | null, clientY = 0): void {
-    if (clientX === null) {
-      this.pointerFrac = null;
-      this.lastPointer = null;
-      return;
-    }
-    const p = this.toCanvas(clientX, clientY);
-    // Uma margem nas bordas facilita chegar aos cantos do mapa.
-    const fx = (p.x / this.canvas.width - 0.08) / 0.84;
-    const fy = (p.y / this.canvas.height - 0.08) / 0.84;
-    this.pointerFrac = { x: Math.min(1, Math.max(0, fx)), y: Math.min(1, Math.max(0, fy)) };
-    this.lastPointer = p;
-    if (this.aimOn) {
-      if (this.aimSrc !== 'mouse') {
-        // Um tremor do mouse não tira a câmera da unidade (ou da casa escolhida pelo teclado).
-        if (!this.aimStart) this.aimStart = p;
-        else if (Math.hypot(p.x - this.aimStart.x, p.y - this.aimStart.y) > 14) this.aimSrc = 'mouse';
-      }
-      if (this.aimSrc === 'mouse') this.aimFrac = { ...this.pointerFrac };
-    }
-  }
-
-  /** Liga/desliga o modo de escolha da casa de movimento (a câmera parte centralizada na unidade). */
-  setAim(on: boolean): void {
-    if (on === this.aimOn) return;
-    this.aimOn = on;
-    this.aimSrc = null;
-    this.aimCell = null;
-    this.aimStart = this.lastPointer;
-  }
-
-  get aiming(): boolean {
-    return this.aimOn && !!this.lockId && !this.held;
-  }
-
-  /** Cursor do teclado na casa (x, y): a câmera desliza até centralizá-la. */
-  aimAt(x: number, y: number): void {
-    this.aimSrc = 'key';
-    this.aimCell = { x, y };
-    this.aimStart = this.lastPointer;
-  }
-
-  /** Ponto do mundo que a câmera deve centralizar durante a mira (null fora dela). */
-  private aimCenter(s: GameState, unitPt: Pt, z: number): Pt | null {
-    if (!this.aimOn || !this.aimSrc) return null;
-    let c: Pt;
-    if (this.aimSrc === 'key' && this.aimCell) {
-      const { x, y } = this.aimCell;
-      c = this.P(x + 0.5, y + 0.5, this.elev(s, x, y) + 6);
-    } else {
-      // O mouse desloca a câmera para o lado em que está; perto do centro (zona morta) nada muda.
-      const dead = 0.14;
-      const shape = (f: number) => {
-        const d = f - 0.5;
-        return Math.sign(d) * Math.max(0, Math.abs(d) - dead) / (0.5 - dead);
-      };
-      const W = this.canvas.width;
-      const H = this.canvas.height;
-      c = { x: unitPt.x + shape(this.aimFrac.x) * 0.45 * (W / z), y: unitPt.y + shape(this.aimFrac.y) * 0.45 * (H / z) };
-    }
-    // Não deixa a câmera fugir do tabuleiro.
-    const corners = [this.P(0, 0, 0), this.P(s.width, 0, 0), this.P(0, s.height, 0), this.P(s.width, s.height, 0)];
-    const xs = corners.map((q) => q.x);
-    const ys = corners.map((q) => q.y);
     return {
-      x: Math.min(Math.max(...xs), Math.max(Math.min(...xs), c.x)),
-      y: Math.min(Math.max(...ys), Math.max(Math.min(...ys), c.y)),
+      x: ((clientX - r.left) / r.width) * this.canvas.width,
+      y: ((clientY - r.top) / r.height) * this.canvas.height,
     };
   }
 
-  /** Onde a casa vai aparecer (coordenadas da página) quando a câmera terminar de chegar. */
-  settledClientPoint(x: number, y: number, s: GameState): Pt {
-    const locked = this.lockId ? s.units.find((u) => u.id === this.lockId && u.alive) : undefined;
-    const z = this.zTarget;
-    const c = locked && !this.held ? this.aimCenter(s, this.P(locked.x + 0.5, locked.y + 0.5, 0), z) : null;
-    if (!c) return this.clientPoint(x, y, s);
-    const W = this.canvas.width;
-    const H = this.canvas.height;
-    const w = this.P(x + 0.5, y + 0.5, this.elev(s, x, y));
-    const p = { x: w.x * z + W / 2 - c.x * z, y: w.y * z + H / 2 - c.y * z };
-    const r = this.canvas.getBoundingClientRect();
-    return { x: r.left + (p.x / W) * r.width, y: r.top + (p.y / H) * r.height };
+  pointer(clientX: number | null, clientY = 0): void {
+    if (clientX === null) {
+      this.pointerFrac = null;
+      return;
+    }
+    const p = this.toCanvas(clientX, clientY);
+    const fx = (p.x / this.canvas.width - 0.08) / 0.84;
+    const fy = (p.y / this.canvas.height - 0.08) / 0.84;
+    this.pointerFrac = {
+      x: Math.min(1, Math.max(0, fx)),
+      y: Math.min(1, Math.max(0, fy)),
+    };
   }
 
-  /**
-   * Zoom pela roda do mouse. Presa numa unidade, continua centralizada nela; parada, o ponto sob
-   * o cursor fica fixo; solta, a câmera segue o cursor.
-   */
   zoomAt(clientX: number, clientY: number, factor: number): void {
     const zOld = this.zTarget;
     this.zTarget = Math.min(MAX_ZOOM, Math.max(1, this.zTarget * factor));
     if (this.held) {
       const c = this.toCanvas(clientX, clientY);
       const k = this.zTarget / zOld;
-      this.held = { tx: c.x - (c.x - this.held.tx) * k, ty: c.y - (c.y - this.held.ty) * k };
-    } else if (!this.lockId) {
-      this.pointer(clientX, clientY);
-    }
+      this.held = {
+        tx: c.x - (c.x - this.held.tx) * k,
+        ty: c.y - (c.y - this.held.ty) * k,
+      };
+    } else if (!this.lockId) this.pointer(clientX, clientY);
   }
 
-  /** Para a câmera onde ela está agora (sem seguir unidade nem mouse). */
   hold(): void {
     this.lockId = null;
-    // Se ainda está chegando no zoom pedido, guarda a posição já no zoom final.
     const k = this.zTarget / this.cam.z;
     const W = this.canvas.width;
     const H = this.canvas.height;
-    this.held = { tx: W / 2 - (W / 2 - this.cam.tx) * k, ty: H / 2 - (H / 2 - this.cam.ty) * k };
+    this.held = {
+      tx: W / 2 - (W / 2 - this.cam.tx) * k,
+      ty: H / 2 - (H / 2 - this.cam.ty) * k,
+    };
   }
 
-  /** Se a casa estiver fora da tela (ou perto da borda), desloca a câmera para mostrá-la. */
-  ensureVisible(x: number, y: number, s: GameState, margin = 70): void {
+  lockOn(id: string | null): void {
+    if (id) this.held = null;
+    if ((this.lockId || this.held) && !id) {
+      this.held = null;
+      const W = this.canvas.width;
+      const H = this.canvas.height;
+      const z = this.cam.z;
+      const fx = W - W * z ? this.cam.tx / (W - W * z) : 0.5;
+      const fy = H - H * z ? this.cam.ty / (H - H * z) : 0.5;
+      this.follow = {
+        x: Math.min(1, Math.max(0, fx)),
+        y: Math.min(1, Math.max(0, fy)),
+      };
+    }
+    this.lockId = id;
+  }
+
+  get lockedOn(): string | null {
+    return this.lockId;
+  }
+
+  get isHeld(): boolean {
+    return !!this.held;
+  }
+
+  resetCamera(): void {
+    this.lockId = null;
+    this.held = null;
+    this.zTarget = 1;
+  }
+
+  ensureVisible(x: number, y: number, margin = 70): void {
     const W = this.canvas.width;
     const H = this.canvas.height;
     const base = this.held ?? { tx: this.cam.tx, ty: this.cam.ty };
     const z = this.zTarget;
-    const w = this.P(x + 0.5, y + 0.5, this.elev(s, x, y));
+    const w = this.P(x + 0.5, y + 0.5);
     const sx = w.x * z + base.tx;
     const sy = w.y * z + base.ty;
     const dx = sx < margin ? margin - sx : sx > W - margin ? W - margin - sx : 0;
@@ -459,924 +931,653 @@ export class Renderer {
     this.held = { tx: base.tx + dx, ty: base.ty + dy };
   }
 
-  get isHeld(): boolean {
-    return !!this.held;
-  }
-
-  /** Prende a câmera numa unidade (centraliza e acompanha), ou solta (null) para seguir o mouse. */
-  lockOn(unitId: string | null): void {
-    if (unitId) this.held = null;
-    if ((this.lockId || this.held) && !unitId) {
-      this.held = null;
-      // Ao soltar, a câmera parte de onde está, sem pulo.
-      const W = this.canvas.width;
-      const H = this.canvas.height;
-      const z = this.cam.z;
-      const fx = W - W * z ? this.cam.tx / (W - W * z) : 0.5;
-      const fy = H - H * z ? this.cam.ty / (H - H * z) : 0.5;
-      this.follow = { x: Math.min(1, Math.max(0, fx)), y: Math.min(1, Math.max(0, fy)) };
-    }
-    this.lockId = unitId;
-  }
-
-  get lockedOn(): string | null {
-    return this.lockId;
-  }
-
-  /** Visão inteira: sem zoom, solta e seguindo o mouse. */
-  resetCamera(): void {
-    this.lockId = null;
-    this.held = null;
-    this.zTarget = 1;
-  }
-
-  private stepCamera(s: GameState, now: number): void {
+  private stepCamera(now: number): void {
     const dt = this.lastNow ? Math.min(64, now - this.lastNow) : 16;
     this.lastNow = now;
     const W = this.canvas.width;
     const H = this.canvas.height;
     const zNext = this.cam.z + (this.zTarget - this.cam.z) * (1 - Math.exp(-dt / 90));
-    const locked = this.lockId ? s.units.find((u) => u.id === this.lockId && u.alive) : undefined;
+    const locked = this.lockId ? this.disp.get(this.lockId) : undefined;
     let want: { tx: number; ty: number };
-    let aimed = false;
     if (this.held) {
-      // Parada: fica onde estava; durante um zoom, mantém o centro da tela no lugar.
       const k = zNext / this.zTarget;
-      want = { tx: W / 2 - (W / 2 - this.held.tx) * k, ty: H / 2 - (H / 2 - this.held.ty) * k };
+      want = {
+        tx: W / 2 - (W / 2 - this.held.tx) * k,
+        ty: H / 2 - (H / 2 - this.held.ty) * k,
+      };
     } else if (locked) {
-      // Centraliza na unidade (mesmo na borda do mapa) e acompanha enquanto ela anda.
-      const p = this.drawPos(locked, now);
-      const w = this.P(p.x + 0.5, p.y + 0.5, this.elev(s, Math.round(p.x), Math.round(p.y)) + 14);
-      // Escolhendo a casa de movimento, segue o mouse ou o cursor do teclado.
-      const c = this.anim ? null : this.aimCenter(s, w, zNext);
-      aimed = !!c;
-      want = { tx: W / 2 - (c ?? w).x * zNext, ty: H / 2 - (c ?? w).y * zNext };
+      const w = this.P(locked.x, locked.y, 20);
+      want = { tx: W / 2 - w.x * zNext, ty: H / 2 - w.y * zNext };
     } else {
       const k = 1 - Math.exp(-dt / 140);
       if (this.pointerFrac) {
         this.follow.x += (this.pointerFrac.x - this.follow.x) * k;
         this.follow.y += (this.pointerFrac.y - this.follow.y) * k;
       }
-      // Com zoom, a câmera mostra a parte do tabuleiro para onde o cursor aponta.
-      // Sem zoom, sobra só um leve deslocamento (parallax) do tabuleiro sobre o fundo.
       const fade = Math.min(1, Math.max(0, (1.4 - zNext) / 0.4));
       want = {
-        tx: (W - W * zNext) * this.follow.x + fade * (0.5 - this.follow.x) * PARALLAX_BOARD.x,
-        ty: (H - H * zNext) * this.follow.y + fade * (0.5 - this.follow.y) * PARALLAX_BOARD.y,
+        tx: (W - W * zNext) * this.follow.x + fade * (0.5 - this.follow.x) * PARALLAX.x,
+        ty: (H - H * zNext) * this.follow.y + fade * (0.5 - this.follow.y) * PARALLAX.y,
       };
     }
-    const m = 1 - Math.exp(-dt / (aimed ? 170 : locked ? 110 : 60));
-    this.cam = { z: zNext, tx: this.cam.tx + (want.tx - this.cam.tx) * m, ty: this.cam.ty + (want.ty - this.cam.ty) * m };
+    const m = 1 - Math.exp(-dt / (locked ? 110 : 60));
+    this.cam = {
+      z: zNext,
+      tx: this.cam.tx + (want.tx - this.cam.tx) * m,
+      ty: this.cam.ty + (want.ty - this.cam.ty) * m,
+    };
   }
 
-  // ---------- Plano de fundo ----------
+  // ---------- Desenho ----------
 
-  private drawBackground(now: number): void {
+  draw(s: GameState, h: Highlights, now: number): void {
+    this.stepAnims(s, now);
+    this.stepCamera(now);
+    const ctx = this.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.drawArena(now);
+    const sx = this.shake ? (Math.random() - 0.5) * this.shake : 0;
+    const sy = this.shake ? (Math.random() - 0.5) * this.shake : 0;
+    this.shake *= 0.88;
+    if (this.shake < 0.3) this.shake = 0;
+    ctx.setTransform(this.cam.z, 0, 0, this.cam.z, this.cam.tx + sx, this.cam.ty + sy);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.floor, 0, 0);
+    this.drawHighlights(s, h, now);
+    this.drawObjects(s, h, now);
+    this.drawParticles(now);
+    this.drawBalloons(now);
+    this.drawFloats(now);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.drawBanners(now);
+  }
+
+  /** Ginásio: parede, placas e torcida pulando (mais forte depois de um gol). */
+  private drawArena(now: number): void {
     const ctx = this.ctx;
     const W = this.canvas.width;
     const H = this.canvas.height;
     const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#13151b');
-    g.addColorStop(0.6, '#181920');
-    g.addColorStop(1, '#1f1b17');
+    g.addColorStop(0, '#1d2233');
+    g.addColorStop(0.55, '#2a3047');
+    g.addColorStop(1, '#15182a');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
-    const off = (depth: number) => ({ x: (0.5 - this.follow.x) * depth, y: (0.5 - this.follow.y) * depth * 0.6 });
-
-    // Engrenagens distantes.
-    let o = off(5);
-    ctx.save();
-    ctx.translate(o.x, o.y);
-    for (const [gx, gy, r, sp] of BG_GEARS) drawGear(ctx, gx * W, gy * H, r, now * sp, 'rgba(201, 162, 39, 0.05)');
-    ctx.restore();
-
-    // Serra ao longe, embaixo.
-    o = off(9);
-    ctx.fillStyle = 'rgba(10, 11, 14, 0.55)';
-    ctx.beginPath();
-    ctx.moveTo(-20 + o.x, H + 10);
-    for (let i = 0; i <= 24; i++) {
-      const x = (i / 24) * (W + 40) - 20 + o.x;
-      const y = H * 0.83 + Math.sin(i * 1.7) * 14 + Math.sin(i * 0.6) * 22 + o.y;
-      ctx.lineTo(x, y);
-    }
-    ctx.lineTo(W + 20 + o.x, H + 10);
-    ctx.closePath();
-    ctx.fill();
-
-    // Poeira e fuligem flutuando.
-    o = off(14);
-    for (let i = 0; i < 46; i++) {
-      const seed = (i * 9301 + 49297) % 233280;
-      const bx = (seed / 233280) * W;
-      const by = ((i * 7919) % 1000) / 1000;
-      const y = (((by * H - now * (0.006 + (i % 5) * 0.002)) % H) + H) % H;
-      const a = 0.05 + (i % 4) * 0.03;
-      ctx.fillStyle = `rgba(230, 210, 170, ${a})`;
-      ctx.fillRect(bx + o.x + Math.sin(now / 1800 + i) * 6, y + o.y, 2, 2);
-    }
-  }
-
-  /** Sombra do tabuleiro sobre o fundo, para ele "flutuar". */
-  private drawBoardShadow(s: GameState): void {
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
-    ctx.shadowBlur = 36;
-    ctx.shadowOffsetY = 16;
-    this.poly([this.P(0, 0, -10), this.P(s.width, 0, -10), this.P(s.width, s.height, -10), this.P(0, s.height, -10)], '#1b1d22');
-    ctx.restore();
-  }
-
-  /** Brilho colorido na casa de cada unidade, mais forte a cada level. */
-  private drawLevelGlows(s: GameState, now: number): void {
-    const ctx = this.ctx;
-    for (const u of s.units) {
-      if (!u.alive) continue;
-      const p = this.drawPos(u, now);
-      const cx = Math.round(p.x);
-      const cy = Math.round(p.y);
-      const e = this.elev(s, cx, cy);
-      const lv = u.level;
-      const pulse = lv >= 4 ? 0.85 + 0.15 * Math.sin(now / 380 + cx) : 1;
-      const alpha = (0.14 + 0.11 * (lv - 1)) * pulse;
-      const c = this.P(p.x + 0.5, p.y + 0.5, e);
-      const g = ctx.createRadialGradient(c.x, c.y, 2, c.x, c.y, 26 + lv * 3);
-      g.addColorStop(0, rgba(TEAM_COLOR[u.team], alpha));
-      g.addColorStop(1, rgba(TEAM_COLOR[u.team], 0));
-      ctx.fillStyle = g;
-      const q = [this.P(p.x, p.y, e), this.P(p.x + 1, p.y, e), this.P(p.x + 1, p.y + 1, e), this.P(p.x, p.y + 1, e)];
-      this.poly(q);
-      ctx.fill();
-      if (lv >= 3) this.poly(q, undefined, rgba(lv >= 5 ? '#ffd25a' : TEAM_LIGHT[u.team], 0.25 + 0.1 * (lv - 3)), 1);
-    }
-  }
-
-
-  private drawGround(s: GameState, now: number): void {
-    const ctx = this.ctx;
-    // Borda do tabuleiro (espessura da "mesa").
-    const H = s.height;
-    const W = s.width;
-    this.poly([this.P(0, H), this.P(W, H), this.P(W, H, -10), this.P(0, H, -10)], '#1e2026');
-    this.poly([this.P(0, 0), this.P(0, H), this.P(0, H, -10), this.P(0, 0, -10)], '#26282f');
-
-    const order: Pos[] = [];
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) order.push({ x, y });
-    order.sort((a, b) => depthOf(a.x + 0.5, a.y + 0.5) - depthOf(b.x + 0.5, b.y + 0.5));
-    for (const { x, y } of order) {
-      {
-        const t = s.terrain[y][x];
-        const e = this.elev(s, x, y);
-        let color = this.groundColor(s, x, y);
-        if ((x + y) % 2 === 0 && t !== 'agua') color = shade(color, 0.04);
-        if (e > 0) {
-          this.box(x, y, x + 1, y + 1, 0, e, shade(color, 0.12), shade(color, -0.25), shade(color, -0.12));
-        } else {
-          this.poly(this.quad(x, y, 0), color);
-        }
-        this.drawGroundMark(t, x, y, e, now);
+    const px = this.cam.tx * 0.15;
+    const py = this.cam.ty * 0.1;
+    // Arquibancada com a torcida.
+    const hype = Math.max(0, 1 - (now - this.cheer) / 2500);
+    for (const c of this.crowdSeed) {
+      const jump = Math.max(0, Math.sin(now / (260 - hype * 120) + c.ph)) * (1.5 + hype * 6);
+      const x = c.x + px;
+      const y = c.y + py - jump;
+      ctx.fillStyle = c.c;
+      ctx.fillRect(x, y, 6, 6);
+      ctx.fillStyle = 'rgba(240,210,170,0.85)';
+      ctx.fillRect(x + 1, y - 4, 4, 4);
+      if (hype > 0.2 && c.row % 2 === 0) {
+        ctx.fillRect(x - 1, y - 7 - jump * 0.3, 2, 4);
+        ctx.fillRect(x + 5, y - 7 - jump * 0.3, 2, 4);
       }
     }
-    // Grade sutil.
-    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = 0; x <= W; x++) {
-      const a = this.P(x, 0);
-      const b = this.P(x, H);
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-    }
-    for (let y = 0; y <= H; y++) {
-      const a = this.P(0, y);
-      const b = this.P(W, y);
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-    }
-    ctx.stroke();
+    // Faixa de placas de publicidade.
+    const bandY = HEADROOM * 0.62 + py;
+    ctx.fillStyle = '#0f1220';
+    ctx.fillRect(0, bandY, W, 16);
+    const ads = ['TRAMA', 'FUTSAL', 'ENGRENAGEM', 'VAPOR & BOLA', 'TRAMA', 'FUTSAL'];
+    ctx.font = 'bold 10px system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    ads.forEach((a, i) => {
+      const x = ((i * 150 + ((now / 40) % 150)) % (W + 150)) - 75 + px;
+      ctx.fillStyle = i % 2 ? '#ffe14d' : '#7fb0ff';
+      ctx.fillText(a, x, bandY + 8);
+    });
   }
 
-  /**
-   * Cor do chão de cada casa (calculada uma vez por mapa): campos em tons de verde que escurecem
-   * perto das florestas e puxam para a cor de terra perto das colinas, com manchas suaves.
-   */
-  private groundCache: { terrain: Terrain[][]; colors: string[][] } | null = null;
-
-  private groundColor(s: GameState, x: number, y: number): string {
-    if (!this.groundCache || this.groundCache.terrain !== s.terrain) {
-      this.groundCache = { terrain: s.terrain, colors: buildGroundColors(s) };
+  private buildCrowd(): void {
+    const W = this.canvas.width;
+    const colors = ['#2f6fd8', '#d63a2f', '#ffe14d', '#ffffff', '#2fbf6a', '#7fb0ff', '#ff8a7a'];
+    let seed = 7;
+    const rnd = () => {
+      seed = (seed * 9301 + 49297) % 233280;
+      return seed / 233280;
+    };
+    for (let row = 0; row < 6; row++) {
+      for (let x = -40; x < W + 40; x += 9 + rnd() * 4) {
+        const left = x < W / 2;
+        const c = rnd() < 0.6 ? (left ? colors[0] : colors[1]) : colors[Math.floor(rnd() * colors.length)];
+        this.crowdSeed.push({ x, y: 12 + row * 10, c, ph: rnd() * 6.28, row });
+      }
     }
-    return this.groundCache.colors[y][x];
   }
 
-  private drawGroundMark(t: Terrain, x: number, y: number, e: number, now: number): void {
+  /** Piso de madeira e linhas da quadra, desenhados uma vez. */
+  private buildFloor(): HTMLCanvasElement {
+    const c = document.createElement('canvas');
+    c.width = this.canvas.width;
+    c.height = this.canvas.height;
+    const g = c.getContext('2d')!;
+    // Borda externa (área de escape) mais escura.
+    const ext = [this.P(-1.2, -0.9), this.P(COURT_W + 1.2, -0.9), this.P(COURT_W + 1.2, COURT_H + 0.9), this.P(-1.2, COURT_H + 0.9)];
+    this.poly(g, ext, '#7b4f2c');
+    // Sombra sob a quadra.
+    // Tábuas.
+    for (let y = 0; y < COURT_H; y++) {
+      for (let x = 0; x < COURT_W; x++) {
+        const plank = (x + (y % 2) * 0.5) % 3 < 1.5;
+        const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+        const j = (n - Math.floor(n)) * 0.08;
+        const base = plank ? [214, 160, 96] : [204, 150, 88];
+        const col = `rgb(${Math.round(base[0] * (1 - j))}, ${Math.round(base[1] * (1 - j))}, ${Math.round(base[2] * (1 - j))})`;
+        this.poly(g, this.quad(x, y), col);
+      }
+    }
+    // Veios entre as tábuas.
+    g.strokeStyle = 'rgba(120, 80, 40, 0.25)';
+    g.lineWidth = 1;
+    for (let y = 0; y <= COURT_H * 2; y++) {
+      const a = this.P(0, y / 2);
+      const b = this.P(COURT_W, y / 2);
+      g.beginPath();
+      g.moveTo(a.x, a.y);
+      g.lineTo(b.x, b.y);
+      g.stroke();
+    }
+    // Áreas pintadas.
+    for (const team of ['azul', 'vermelho'] as const) {
+      const gx = team === 'azul' ? 0 : COURT_W;
+      const pts: Pt[] = [];
+      for (let i = 0; i <= 24; i++) {
+        const a = -Math.PI / 2 + (i / 24) * Math.PI;
+        const fx = gx + (team === 'azul' ? 1 : -1) * Math.cos(a) * AREA_RADIUS;
+        const fy = COURT_H / 2 + Math.sin(a) * AREA_RADIUS;
+        pts.push(this.P(fx, fy));
+      }
+      this.poly(g, pts, team === 'azul' ? 'rgba(47,111,216,0.28)' : 'rgba(214,58,47,0.28)');
+    }
+    // Linhas brancas.
+    g.strokeStyle = 'rgba(255,255,255,0.92)';
+    g.lineWidth = 2;
+    this.poly(g, [this.P(0, 0), this.P(COURT_W, 0), this.P(COURT_W, COURT_H), this.P(0, COURT_H)], undefined, 'rgba(255,255,255,0.92)', 2);
+    const m1 = this.P(COURT_W / 2, 0);
+    const m2 = this.P(COURT_W / 2, COURT_H);
+    g.beginPath();
+    g.moveTo(m1.x, m1.y);
+    g.lineTo(m2.x, m2.y);
+    g.stroke();
+    const circle = (cx: number, cy: number, r: number, from = 0, to = Math.PI * 2) => {
+      g.beginPath();
+      for (let i = 0; i <= 40; i++) {
+        const a = from + ((to - from) * i) / 40;
+        const p = this.P(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+        if (i === 0) g.moveTo(p.x, p.y);
+        else g.lineTo(p.x, p.y);
+      }
+      g.stroke();
+    };
+    circle(COURT_W / 2, COURT_H / 2, 1.5);
+    circle(0, COURT_H / 2, AREA_RADIUS, -Math.PI / 2, Math.PI / 2);
+    circle(COURT_W, COURT_H / 2, AREA_RADIUS, Math.PI / 2, (Math.PI * 3) / 2);
+    // Marcas do pênalti e do 10 m.
+    for (const [fx, r] of [
+      [3, 2.5],
+      [TEN_METER, 2.5],
+      [COURT_W - 3, 2.5],
+      [COURT_W - TEN_METER, 2.5],
+      [COURT_W / 2, 3],
+    ]) {
+      const p = this.P(fx, COURT_H / 2);
+      g.fillStyle = '#ffffff';
+      g.beginPath();
+      g.ellipse(p.x, p.y, r, r * 0.6, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+    // Logo no centro.
+    const cp = this.P(COURT_W / 2, COURT_H / 2);
+    g.fillStyle = 'rgba(255,255,255,0.18)';
+    g.font = 'bold 18px system-ui, sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.save();
+    g.translate(cp.x, cp.y);
+    g.transform(1, AY / AX, BX / BY, 1, 0, 0);
+    g.fillText('TRAMA', 0, 0);
+    g.restore();
+    return c;
+  }
+
+  private drawHighlights(s: GameState, h: Highlights, now: number): void {
     const ctx = this.ctx;
-    if (t === 'agua') {
-      ctx.strokeStyle = 'rgba(120, 170, 220, 0.35)';
-      ctx.lineWidth = 1;
-      const phase = ((now / 900 + x * 0.37 + y * 0.21) % 1) * 0.5;
-      for (const fy of [0.3, 0.7]) {
-        const a = this.P(x + 0.15 + phase * 0.3, y + fy);
-        const b = this.P(x + 0.55 + phase * 0.3, y + fy);
+    for (const c of h.cutZones) this.poly(ctx, this.quad(c.x, c.y), 'rgba(214,58,47,0.14)');
+    for (const c of h.moves) this.poly(ctx, this.quad(c.x, c.y), 'rgba(80,170,255,0.32)', 'rgba(170,215,255,0.55)', 1);
+    if (h.passLine) {
+      const a = this.P(h.passLine.from.x + 0.5, h.passLine.from.y + 0.5);
+      const b = this.P(h.passLine.to.x + 0.5, h.passLine.to.y + 0.5);
+      const col = h.passLine.tone === 'bom' ? '#7dff9a' : h.passLine.tone === 'risco' ? '#ffe14d' : '#ff6b5b';
+      ctx.save();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([6, 5]);
+      ctx.lineDashOffset = -now / 40;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      if (h.passLine.alto) {
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 40 };
+        ctx.quadraticCurveTo(mid.x, mid.y, b.x, b.y);
+      } else ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+    for (const t of h.targets) {
+      const col = t.tone === 'bom' ? '#7dff9a' : t.tone === 'risco' ? '#ffe14d' : '#ff6b5b';
+      const p = this.P(t.x + 0.5, t.y + 0.5);
+      const pulse = 1 + 0.08 * Math.sin(now / 160);
+      ctx.save();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, 15 * pulse, 8 * pulse, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      if (t.kind === 'drible' || t.kind === 'desarme') {
+        ctx.setLineDash([3, 3]);
         ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.quadraticCurveTo((a.x + b.x) / 2, a.y - 3, b.x, b.y);
+        ctx.ellipse(p.x, p.y, 19 * pulse, 11 * pulse, 0, 0, Math.PI * 2);
         ctx.stroke();
       }
-    } else if (t === 'ponte') {
-      ctx.strokeStyle = '#7a6550';
-      ctx.lineWidth = 1.5;
-      for (let i = 1; i < 5; i++) {
-        const a = this.P(x + 0.05, y + i / 5);
-        const b = this.P(x + 0.95, y + i / 5);
+      ctx.restore();
+    }
+    if (h.shot) {
+      // Gol alvo pulsando.
+      const gx = h.shot.team === 'azul' ? COURT_W : 0;
+      const a = this.P(gx, COURT_H / 2 - 1);
+      const b = this.P(gx, COURT_H / 2 + 1);
+      ctx.save();
+      ctx.strokeStyle = '#ffe14d';
+      ctx.lineWidth = 4 + Math.sin(now / 120) * 1.5;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y - 2);
+      ctx.lineTo(b.x, b.y - 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // Cursor (mouse ou teclado).
+    if (h.hover) {
+      const pulse = h.kbCursor ? 0.65 + 0.35 * Math.sin(now / 140) : 0.5;
+      this.poly(
+        ctx,
+        this.quad(h.hover.x, h.hover.y),
+        `rgba(255,255,255,${(0.12 * pulse).toFixed(3)})`,
+        h.kbCursor ? `rgba(255,225,77,${pulse.toFixed(3)})` : 'rgba(255,255,255,0.6)',
+        h.kbCursor ? 2.5 : 1.5,
+      );
+    }
+    void s;
+  }
+
+  private drawObjects(s: GameState, h: Highlights, now: number): void {
+    const items: { depth: number; draw: () => void }[] = [];
+    const depth = (fx: number, fy: number) => fx * AY + fy * BY;
+    for (const team of ['azul', 'vermelho'] as const) {
+      // O gol que o time defende: atrás da linha.
+      const gx = team === 'azul' ? 0 : COURT_W;
+      items.push({
+        depth: depth(gx, COURT_H / 2 - 1.2),
+        draw: () => this.drawGoal(team, now, 'back'),
+      });
+      items.push({
+        depth: depth(gx, COURT_H / 2 + 1.05),
+        draw: () => this.drawGoal(team, now, 'front'),
+      });
+    }
+    for (const p of s.players) {
+      const d = this.disp.get(p.id);
+      if (!d) continue;
+      items.push({
+        depth: depth(d.x, d.y),
+        draw: () => this.drawPlayer(s, p, d, h, now),
+      });
+    }
+    items.push({
+      depth: depth(this.ballPos().x, this.ballPos().y) + 0.5,
+      draw: () => this.drawBall(now),
+    });
+    items.sort((a, b) => a.depth - b.depth);
+    // Sombras primeiro.
+    for (const p of s.players) {
+      const d = this.disp.get(p.id);
+      if (!d) continue;
+      const g = this.P(d.x, d.y);
+      this.ctx.fillStyle = 'rgba(40,20,5,0.28)';
+      this.ctx.beginPath();
+      this.ctx.ellipse(g.x, g.y, 11 - Math.min(4, d.h / 4), 5 - Math.min(2, d.h / 8), 0, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
+    for (const it of items) it.draw();
+  }
+
+  private ballPos(): { x: number; y: number; h: number } {
+    if (this.ball.owner) {
+      const d = this.disp.get(this.ball.owner);
+      if (d) {
+        // Parada no pé, do lado para onde o jogador olha.
+        const side = d.flip ? -1 : 1;
+        const bob = Math.abs(Math.sin(performance.now() / 300)) * 1.5;
+        return { x: d.x + side * 0.32, y: d.y + 0.18, h: d.h + bob };
+      }
+    }
+    return { x: this.ball.x, y: this.ball.y, h: this.ball.h };
+  }
+
+  private drawBall(now: number): void {
+    const ctx = this.ctx;
+    const b = this.ballPos();
+    const g = this.P(b.x, b.y);
+    // Rastro do chute.
+    if (this.ball.trail) {
+      this.trail.push({ x: b.x, y: b.y, h: b.h, t: now });
+    }
+    this.trail = this.trail.filter((t) => now - t.t < 220);
+    for (const t of this.trail) {
+      const p = this.P(t.x, t.y, t.h + 4);
+      const a = 1 - (now - t.t) / 220;
+      ctx.fillStyle = `rgba(255,255,255,${(a * 0.55).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4 * a + 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(40,20,5,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(g.x, g.y, 5 - Math.min(3, b.h / 12), 2.5 - Math.min(1.5, b.h / 24), 0, 0, Math.PI * 2);
+    ctx.fill();
+    const p = this.P(b.x, b.y, b.h + 5);
+    const rot = Math.floor(this.ball.spin) % 4;
+    const S = 1.5;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate((rot * Math.PI) / 2);
+    BALL.forEach((row, y) => {
+      for (let x = 0; x < row.length; x++) {
+        const ch = row[x];
+        if (ch === '.') continue;
+        ctx.fillStyle = ch === 'k' ? '#1a1418' : '#ffffff';
+        ctx.fillRect((x - 3.5) * S, (y - 3.5) * S, S, S);
+      }
+    });
+    ctx.restore();
+  }
+
+  private drawPlayer(s: GameState, p: Player, d: Disp, h: Highlights, now: number): void {
+    const ctx = this.ctx;
+    const g = this.P(d.x, d.y);
+    // Anel do time, mais forte em quem está selecionado.
+    const active = h.activeId === p.id || h.selectedId === p.id;
+    ctx.save();
+    ctx.strokeStyle = active ? '#ffe14d' : p.team === 'azul' ? 'rgba(127,176,255,0.85)' : 'rgba(255,138,122,0.85)';
+    ctx.lineWidth = active ? 2.5 : 1.5;
+    ctx.beginPath();
+    ctx.ellipse(g.x, g.y, active ? 14 + Math.sin(now / 150) : 12, active ? 7 : 6, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    const activeTeamTurn = s.activeTeam === p.team && !s.over;
+    const dim = activeTeamTurn && p.activated;
+    // Vista e lado: de frente quando desce na tela, de costas quando sobe.
+    const toward = s.holder === p.id ? (p.team === 'azul' ? 'E' : 'W') : p.facing;
+    const facingBack = d.back ?? (toward === 'E' || toward === 'N');
+    const facingLeft = d.flip ?? (toward === 'W' || toward === 'N');
+    const idleBob = d.frame ? 0 : Math.sin(now / 380 + p.number) > 0.6 ? 1 : 0;
+    const frame: Frame = d.frame ?? 'idle';
+    const spr = playerSprite(p, frame, facingBack ? 'back' : 'front');
+    const sw = spr.width * SCALE;
+    const sh = spr.height * SCALE;
+    ctx.save();
+    ctx.globalAlpha = dim ? 0.62 : 1;
+    ctx.translate(g.x, g.y - d.h - idleBob);
+    if (d.rot) ctx.rotate(d.rot);
+    if (facingLeft) ctx.scale(-1, 1);
+    ctx.drawImage(spr, -sw / 2, -sh + 2, sw, sh);
+    if (d.flash) ctx.drawImage(whiteSprite(p, frame, facingBack ? 'back' : 'front'), -sw / 2, -sh + 2, sw, sh);
+    ctx.restore();
+    // Estrelinhas de tontura (desequilibrado).
+    if (d.dizzy || p.unbalanced) {
+      for (let i = 0; i < 3; i++) {
+        const a = now / 260 + (i * Math.PI * 2) / 3;
+        const sp = {
+          x: g.x + Math.cos(a) * 10,
+          y: g.y - sh - d.h + Math.sin(a) * 3 + 2,
+        };
+        ctx.fillStyle = '#ffe14d';
+        ctx.fillRect(sp.x - 1.5, sp.y - 0.5, 3, 1);
+        ctx.fillRect(sp.x - 0.5, sp.y - 1.5, 1, 3);
+      }
+    }
+    // Nome e barras de fôlego e habilidade.
+    const top = g.y - sh - d.h - 6;
+    ctx.font = 'bold 9px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle = 'rgba(10,10,18,0.55)';
+    const label = `${p.number} ${p.name}`;
+    const tw = ctx.measureText(label).width + 6;
+    ctx.fillRect(g.x - tw / 2, top - 11, tw, 11);
+    ctx.fillStyle = p.team === 'azul' ? '#bcd6ff' : '#ffc2b8';
+    ctx.fillText(label, g.x, top - 1);
+    if (p.ready && s.activeTeam !== p.team) {
+      ctx.fillStyle = '#ffe14d';
+      ctx.fillText('!', g.x + tw / 2 + 4, top - 1);
+    }
+  }
+
+  private drawGoal(team: Team, now: number, part: 'back' | 'front'): void {
+    const ctx = this.ctx;
+    const gx = team === 'azul' ? 0 : COURT_W;
+    const depthX = team === 'azul' ? -0.75 : COURT_W + 0.75;
+    const y0 = COURT_H / 2 - 1;
+    const y1 = COURT_H / 2 + 1;
+    const H = 30;
+    const bulge = this.netBulge && this.netBulge.team === team ? Math.max(0, 1 - (now - this.netBulge.t0) / 700) : 0;
+    if (bulge <= 0 && this.netBulge?.team === team) this.netBulge = null;
+    const bx = depthX + (team === 'azul' ? -0.35 : 0.35) * bulge;
+    if (part === 'back') {
+      // Rede: fundo e laterais.
+      const net = 'rgba(255,255,255,0.45)';
+      ctx.strokeStyle = net;
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 8; i++) {
+        const y = y0 + ((y1 - y0) * i) / 8;
+        const a = this.P(bx, y, 0);
+        const b = this.P(bx, y, H * 0.85);
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
       }
-    } else if (t === 'colina') {
-      ctx.strokeStyle = 'rgba(150, 140, 115, 0.6)';
-      ctx.lineWidth = 1.2;
-      const c = this.P(x + 0.5, y + 0.6, e);
-      ctx.beginPath();
-      ctx.arc(c.x, c.y + 6, 9, Math.PI * 1.15, Math.PI * 1.85);
-      ctx.stroke();
-    } else if (t === 'lama') {
-      ctx.fillStyle = 'rgba(90, 70, 45, 0.7)';
-      for (const [fx, fy] of [
-        [0.3, 0.35],
-        [0.65, 0.6],
-        [0.4, 0.75],
-      ]) {
-        const c = this.P(x + fx, y + fy);
+      for (let k = 0; k <= 5; k++) {
+        const hh = (H * 0.85 * k) / 5;
+        const a = this.P(bx, y0, hh);
+        const b = this.P(bx, y1, hh);
         ctx.beginPath();
-        ctx.ellipse(c.x, c.y, 4, 2, 0, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
       }
-    } else if (t === 'fonte') {
-      this.poly(this.quad(x + 0.1, y + 0.1, 0).map((p, i) => (i === 0 ? p : p)), undefined, 'rgba(220, 220, 255, 0.25)', 1);
-    }
-  }
-
-  private drawStrikes(s: GameState, now: number): void {
-    const ctx = this.ctx;
-    const blink = 0.3 + 0.25 * Math.sin(now / 160);
-    for (const st of s.strikes) {
-      const color = st.team === 'azul' ? `rgba(80,140,255,${blink})` : `rgba(255,80,60,${blink})`;
-      for (const c of st.cells) this.poly(this.quad(c.x, c.y, this.elev(s, c.x, c.y)), color);
-      const p = this.P(st.cx + 0.5, st.cy + 0.5, this.elev(s, st.cx, st.cy));
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 15px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(String(strikeCountdown(s, st.resolveAt)), p.x, p.y);
-    }
-  }
-
-  private drawMines(s: GameState, h: Highlights): void {
-    const ctx = this.ctx;
-    for (const m of s.mines) {
-      if (m.team !== h.viewer) continue;
-      const c = this.P(m.x + 0.5, m.y + 0.5, this.elev(s, m.x, m.y));
-      ctx.strokeStyle = '#ffcf5a';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.ellipse(c.x, c.y, 6, 3.5, 0, 0, Math.PI * 2);
-      ctx.moveTo(c.x - 9, c.y);
-      ctx.lineTo(c.x + 9, c.y);
-      ctx.stroke();
-    }
-  }
-
-  // ---------- Objetos em pé (de trás para a frente) ----------
-
-  private drawObjects(s: GameState, h: Highlights, now: number): void {
-    type Item = { depth: number; draw: () => void };
-    const items: Item[] = [];
-    const at = depthOf;
-
-    for (let y = 0; y < s.height; y++) {
-      for (let x = 0; x < s.width; x++) {
-        const t = s.terrain[y][x];
-        if (t === 'floresta') items.push({ depth: at(x + 0.5, y + 0.45), draw: () => this.drawTrees(x, y) });
-        else if (t === 'ruina') items.push({ depth: at(x + 0.5, y + 0.5), draw: () => this.drawRuin(x, y) });
-      }
-    }
-    for (const n of s.nodes) items.push({ depth: at(n.x + 0.5, n.y + 0.5), draw: () => this.drawNode(s, n.x, n.y, n.color, n.charges, now) });
-    for (const w of this.warps) items.push({ depth: at(w.from.x + 0.5, w.from.y + 0.5), draw: () => this.drawWarpGhost(s, w, now) });
-    for (const b of [s.bases.azul, s.bases.vermelho]) items.push({ depth: at(b.x + 0.5, b.y + 0.6), draw: () => this.drawBase(b.x, b.y, b.team, b.hp / b.maxHp, b.hp > 0, now) });
-    for (const b of s.barricades) items.push({ depth: at(b.x + 0.5, b.y + 0.55), draw: () => this.drawBarricade(b.x, b.y, b.team, b.hp) });
-    for (const sm of s.smoke) for (const c of sm.cells) items.push({ depth: at(c.x + 0.5, c.y + 0.9), draw: () => this.drawSmoke(c.x, c.y, now) });
-    for (const u of s.units) {
-      if (!u.alive) continue;
-      const p = this.drawPos(u, now);
-      items.push({ depth: at(p.x + 0.5, p.y + 0.62), draw: () => this.drawUnit(s, u, p, h) });
-    }
-    items.sort((a, b) => a.depth - b.depth);
-    for (const it of items) it.draw();
-  }
-
-  private drawTrees(x: number, y: number): void {
-    const ctx = this.ctx;
-    for (const [fx, fy, size] of [
-      [0.3, 0.35, 1],
-      [0.72, 0.42, 0.85],
-      [0.48, 0.78, 1.1],
-    ]) {
-      const g = this.P(x + fx, y + fy);
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      ctx.beginPath();
-      ctx.ellipse(g.x + 2, g.y, 7 * size, 3 * size, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#5a4430';
-      ctx.fillRect(g.x - 1.5, g.y - 5 * size, 3, 5 * size);
-      ctx.fillStyle = '#2f5a3c';
-      ctx.beginPath();
-      ctx.moveTo(g.x, g.y - 22 * size);
-      ctx.lineTo(g.x - 8 * size, g.y - 4 * size);
-      ctx.lineTo(g.x + 8 * size, g.y - 4 * size);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = '#3f7550';
-      ctx.beginPath();
-      ctx.moveTo(g.x, g.y - 22 * size);
-      ctx.lineTo(g.x - 8 * size, g.y - 4 * size);
-      ctx.lineTo(g.x, g.y - 6 * size);
-      ctx.closePath();
-      ctx.fill();
-    }
-  }
-
-  private drawRuin(x: number, y: number): void {
-    this.box(x + 0.15, y + 0.3, x + 0.45, y + 0.7, 0, 9, '#77757c', '#4f4d54', '#625f67');
-    this.box(x + 0.55, y + 0.2, x + 0.85, y + 0.55, 0, 16, '#807e86', '#56545c', '#6a6870');
-  }
-
-  /**
-   * Cristal dos nós: uma bipirâmide de 6 faces que gira sem parar e flutua de leve sobre a casa,
-   * com um halo pulsando. A Fonte (prisma) é maior e tem cada face de uma cor. Logo depois de
-   * uma troca de lugar, ele só aparece quando sai do wormhole.
-   */
-  private drawNode(s: GameState, x: number, y: number, color: keyof typeof NODE_COLOR, charges: number, now: number): void {
-    const ctx = this.ctx;
-    const g = this.P(x + 0.5, y + 0.5, this.elev(s, x, y));
-    const c = NODE_COLOR[color];
-    const prisma = color === 'prisma';
-    const occupied = s.units.some((u) => u.alive && u.x === x && u.y === y);
-    const seed = nodeSeed(x, y);
-    // Saindo do wormhole: escondido até a hora, depois cresce subindo do chão.
-    const w = this.warps.find((v) => v.to.x === x && v.to.y === y && now - v.t0 < WARP.total);
-    let grow = 1;
-    if (w) {
-      const p = (now - w.t0 - WARP.emerge[0]) / (WARP.emerge[1] - WARP.emerge[0]);
-      if (p <= 0) return;
-      grow = p >= 1 ? 1 : easeOutBack(p);
-    }
-    const bob = occupied ? 0 : Math.sin(now / 650 + seed * 6.28) * 2.6;
-    const size = prisma ? 1.3 : 1;
-    // Sombra: diminui quando o cristal sobe.
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.beginPath();
-    ctx.ellipse(g.x, g.y, Math.max(0.1, (7 * size - bob * 0.4) * Math.min(1, grow)), Math.max(0.1, (3 * size - bob * 0.15) * Math.min(1, grow)), 0, 0, Math.PI * 2);
-    ctx.fill();
-    if (grow >= 1) {
-      for (let i = 0; i < charges; i++) {
-        ctx.fillStyle = prisma ? `hsl(${(i * 70 + now / 20) % 360}, 80%, 72%)` : c;
-        ctx.fillRect(g.x - 8 + i * 6, g.y + 3, 4, 3);
-      }
-    }
-    if (occupied) return;
-    const rise = (1 - Math.min(1, grow)) * 12 * size; // sai de dentro do chão
-    this.drawCrystal(g.x, g.y - 12 * size + bob + rise, color, size * grow, charges > 0, seed, now, w ? 1 + 3 * (1 - Math.min(1, grow)) : 1);
-  }
-
-  /** Desenha o cristal com o centro em (gx, cy). `spinMul` acelera o giro (entrando/saindo do wormhole). */
-  private drawCrystal(gx: number, cy: number, color: keyof typeof NODE_COLOR, size: number, alive: boolean, seed: number, now: number, spinMul = 1): void {
-    if (size <= 0.02) return;
-    const ctx = this.ctx;
-    const c = NODE_COLOR[color];
-    const prisma = color === 'prisma';
-    ctx.save();
-    ctx.globalAlpha = alive ? 1 : 0.4;
-    if (alive) {
-      // Halo.
-      const pulse = 0.5 + 0.5 * Math.sin(now / 420 + seed * 9);
-      const r = 13 * size + pulse * 2;
-      const grad = ctx.createRadialGradient(gx, cy, 1, gx, cy, r);
-      grad.addColorStop(0, hexA(prisma ? '#ffffff' : c, 0.32 + 0.12 * pulse));
-      grad.addColorStop(1, hexA(prisma ? '#ffffff' : c, 0));
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(gx, cy, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    const spin = ((now / (alive ? 900 : 2600)) * spinMul) * (seed > 0.5 ? 1 : -1) + seed * 6.28;
-    const N = 6;
-    const R = 6.2 * size;
-    const top = { x: gx, y: cy - 9 * size };
-    const bot = { x: gx, y: cy + 8 * size };
-    const eq = [];
-    for (let k = 0; k < N; k++) {
-      const a = spin + (k * Math.PI * 2) / N;
-      eq.push({ x: gx + Math.cos(a) * R, y: cy + Math.sin(a) * R * 0.32, a });
-    }
-    // Só as faces da frente (metade de baixo da elipse), de trás para a frente.
-    const faces: { k: number; mid: number }[] = [];
-    for (let k = 0; k < N; k++) {
-      const mid = spin + ((k + 0.5) * Math.PI * 2) / N;
-      if (Math.sin(mid) > -0.05) faces.push({ k, mid });
-    }
-    faces.sort((p, q) => Math.sin(p.mid) - Math.sin(q.mid));
-    for (const f of faces) {
-      const e1 = eq[f.k];
-      const e2 = eq[(f.k + 1) % N];
-      const light = 0.5 + 0.5 * Math.cos(f.mid + 2.2); // luz vindo da esquerda
-      const base = prisma ? `hsl(${(f.k * 60 + now / 25) % 360}, 75%, 66%)` : c;
-      for (const [apex, up] of [
-        [top, true],
-        [bot, false],
-      ] as const) {
-        ctx.fillStyle = base;
+      // Teto e lateral de trás.
+      for (let i = 0; i <= 4; i++) {
+        const fx = gx + (bx - gx) * (i / 4);
+        const a = this.P(fx, y0, H - (H * 0.15 * i) / 4);
+        const b = this.P(fx, y1, H - (H * 0.15 * i) / 4);
         ctx.beginPath();
-        ctx.moveTo(apex.x, apex.y);
-        ctx.lineTo(e1.x, e1.y);
-        ctx.lineTo(e2.x, e2.y);
-        ctx.closePath();
-        ctx.fill();
-        // Sombreado da face: de cima é mais claro; a luz varia conforme o giro.
-        const shadeA = up ? 0.45 * (1 - light) : 0.25 + 0.4 * (1 - light);
-        ctx.fillStyle = `rgba(10, 8, 20, ${shadeA.toFixed(3)})`;
-        ctx.fill();
-        if (up && light > 0.6) {
-          ctx.fillStyle = `rgba(255, 255, 255, ${((light - 0.6) * 0.9).toFixed(3)})`;
-          ctx.fill();
-        }
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
       }
-    }
-    // Brilho no topo.
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.beginPath();
-    ctx.arc(top.x, top.y + 1.5, 1.2 * Math.min(1, size), 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  /** Cristal sendo engolido pelo wormhole de origem: gira cada vez mais rápido, encolhe e afunda. */
-  private drawWarpGhost(s: GameState, w: Warp, now: number): void {
-    const p = (now - w.t0 - WARP.sink[0]) / (WARP.sink[1] - WARP.sink[0]);
-    if (p >= 1) return;
-    const k = Math.max(0, p);
-    const e = k * k;
-    const g = this.P(w.from.x + 0.5, w.from.y + 0.5, this.elev(s, w.from.x, w.from.y));
-    const size = w.color === 'prisma' ? 1.3 : 1;
-    const swirl = e * 5;
-    const ox = Math.cos(now / 90) * 2.5 * e;
-    this.drawCrystal(g.x + ox, g.y - 12 * size * (1 - e) + Math.sin(swirl) * 1.2, w.color, size * (1 - e * 0.95), true, nodeSeed(w.from.x, w.from.y), now, 1 + 6 * e);
-  }
-
-  /** Vórtices no chão: abre, gira e fecha (na origem e depois no destino). */
-  private drawWarpVoids(s: GameState, now: number): void {
-    this.warps = this.warps.filter((w) => now - w.t0 < WARP.total);
-    for (const w of this.warps) {
-      const t = now - w.t0;
-      this.drawVoid(s, w.from, w.color, t, WARP.sinkVoid, now);
-      this.drawVoid(s, w.to, w.color, t, WARP.emergeVoid, now);
-      this.drawWarpBurst(s, w, t);
-    }
-  }
-
-  private drawVoid(s: GameState, c: Pos, color: keyof typeof NODE_COLOR, t: number, win: readonly [number, number, number, number], now: number): void {
-    const [o0, o1, c0, c1] = win;
-    if (t < o0 || t > c1) return;
-    const open = t < o1 ? easeOutBack((t - o0) / (o1 - o0)) : t > c0 ? 1 - easeIn((t - c0) / (c1 - c0)) : 1;
-    if (open <= 0.01) return;
-    const ctx = this.ctx;
-    const g = this.P(c.x + 0.5, c.y + 0.5, this.elev(s, c.x, c.y));
-    const rim = color === 'prisma' ? `hsl(${(now / 6) % 360}, 90%, 70%)` : NODE_COLOR[color];
-    const r = 13 * open;
-    ctx.save();
-    ctx.translate(g.x, g.y);
-    ctx.scale(1, 0.42);
-    // Brilho de fora.
-    ctx.globalCompositeOperation = 'lighter';
-    const glow = ctx.createRadialGradient(0, 0, r * 0.6, 0, 0, r * 1.7);
-    glow.addColorStop(0, color === 'prisma' ? 'rgba(220,200,255,0.5)' : hexA(NODE_COLOR[color], 0.5));
-    glow.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 1.7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalCompositeOperation = 'source-over';
-    // O vazio.
-    const hole = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
-    hole.addColorStop(0, '#000000');
-    hole.addColorStop(0.55, 'rgba(12, 4, 24, 0.98)');
-    hole.addColorStop(0.85, 'rgba(60, 20, 90, 0.9)');
-    hole.addColorStop(1, 'rgba(60, 20, 90, 0)');
-    ctx.fillStyle = hole;
-    ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.fill();
-    // Espirais girando para dentro.
-    ctx.strokeStyle = rim;
-    ctx.lineCap = 'round';
-    for (let k = 0; k < 4; k++) {
-      const a0 = now / 140 + (k * Math.PI) / 2;
-      ctx.globalAlpha = 0.85;
-      ctx.lineWidth = 1.6;
+      // Trave de trás (lado de cima da tela).
+      this.post(gx, y0, H);
+      const c0 = this.P(gx, y0, H);
+      const c1 = this.P(gx, y1, H);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3;
       ctx.beginPath();
-      for (let i = 0; i <= 14; i++) {
-        const u = i / 14;
-        const rr = r * (0.95 - u * 0.7);
-        const a = a0 + u * 2.6;
-        if (i === 0) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
-        else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
-      }
+      ctx.moveTo(c0.x, c0.y);
+      ctx.lineTo(c1.x, c1.y);
       ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.98, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  /** Faíscas espirrando quando o cristal sai do wormhole de destino. */
-  private drawWarpBurst(s: GameState, w: Warp, t: number): void {
-    const p = (t - WARP.emerge[0]) / 520;
-    if (p <= 0 || p >= 1) return;
-    const ctx = this.ctx;
-    const g = this.P(w.to.x + 0.5, w.to.y + 0.5, this.elev(s, w.to.x, w.to.y));
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < 14; i++) {
-      const a = (i / 14) * Math.PI * 2 + i * 0.37;
-      const sp = 10 + (i % 4) * 4;
-      const x = g.x + Math.cos(a) * sp * p;
-      const y = g.y - 6 + Math.sin(a) * sp * p * 0.45 - p * 10 * (1 + (i % 3));
-      const alpha = (1 - p) * 0.9;
-      ctx.fillStyle = w.color === 'prisma' ? `hsla(${(i * 40) % 360}, 90%, 75%, ${alpha.toFixed(3)})` : hexA(NODE_COLOR[w.color], alpha);
+      ctx.strokeStyle = team === 'azul' ? '#2f6fd8' : '#d63a2f';
+      ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.arc(x, y, 1.3 * (1 - p) + 0.4, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.moveTo(c0.x, c0.y);
+      ctx.lineTo(c1.x, c1.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      this.post(gx, y1, H);
     }
-    ctx.restore();
   }
 
-  /** Partículas brilhantes e sutis subindo dos nós com carga. */
-  private drawNodeSparks(s: GameState, now: number): void {
+  private post(fx: number, fy: number, H: number): void {
     const ctx = this.ctx;
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    for (const n of s.nodes) {
-      if (n.charges <= 0) continue;
-      if (this.warps.some((w) => w.to.x === n.x && w.to.y === n.y && now - w.t0 < WARP.emerge[1])) continue;
-      const seed = nodeSeed(n.x, n.y);
-      const g = this.P(n.x + 0.5, n.y + 0.5, this.elev(s, n.x, n.y));
-      const prisma = n.color === 'prisma';
-      const count = prisma ? 7 : 4;
-      for (let i = 0; i < count; i++) {
-        const r1 = frac(Math.sin((i + 1) * 12.9898 + seed * 78.233) * 43758.5453);
-        const r2 = frac(Math.sin((i + 1) * 39.346 + seed * 11.135) * 24634.6345);
-        const period = 1700 + r1 * 1300;
-        const t = frac(now / period + r2 + seed);
-        const ang = r1 * Math.PI * 2 + t * 1.2;
-        const rad = 3 + r2 * 6 + t * 3;
-        const px = g.x + Math.cos(ang) * rad;
-        const py = g.y - 6 - t * (22 + r2 * 10) + Math.sin(ang) * rad * 0.32;
-        const a = Math.sin(Math.PI * t) * (0.55 + 0.3 * r1);
-        const col = prisma ? `hsla(${(r1 * 360 + now / 15) % 360}, 90%, 78%, ${a.toFixed(3)})` : hexA(NODE_COLOR[n.color], a);
-        ctx.fillStyle = col;
-        ctx.beginPath();
-        ctx.arc(px, py, 0.7 + 0.6 * (1 - t), 0, Math.PI * 2);
-        ctx.fill();
-        // Brilho em cruz nas maiores.
-        if (r2 > 0.6) {
-          ctx.fillStyle = `rgba(255,255,255,${(a * 0.6).toFixed(3)})`;
-          ctx.fillRect(px - 2, py - 0.25, 4, 0.5);
-          ctx.fillRect(px - 0.25, py - 2, 0.5, 4);
-        }
-      }
-    }
-    ctx.restore();
-  }
-
-  private drawBase(x: number, y: number, team: Team, frac: number, alive: boolean, now: number): void {
-    const ctx = this.ctx;
-    const height = alive ? 34 : 8;
-    this.box(x + 0.08, y + 0.08, x + 0.92, y + 0.92, 0, height, alive ? TEAM_COLOR[team] : '#3a3a3a', alive ? TEAM_DARK[team] : '#262626', alive ? shade(TEAM_DARK[team], 0.1) : '#2e2e2e');
-    if (!alive) return;
-    // Bandeira no mastro, atrás das ameias.
-    this.drawFlag(x + 0.5, y + 0.2, height, team, now);
-    // Ameias.
-    for (const fx of [0.12, 0.42, 0.72]) this.box(x + fx, y + 0.1, x + fx + 0.16, y + 0.28, height, 5, TEAM_LIGHT[team], TEAM_DARK[team], TEAM_DARK[team]);
-    const f = this.P(x + 0.5, y + 0.92, height / 2);
-    ctx.fillStyle = '#f2ead8';
-    ctx.font = 'bold 11px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('QG', f.x, f.y);
-    const top = this.P(x + 0.5, y + 0.5, height + 14);
-    this.bar(top.x - 15, top.y, 30, 4, frac, '#7fd36b');
-  }
-
-  /** Mastro com bandeira do time tremulando ao vento (onda que corre do mastro para a ponta). */
-  private drawFlag(fx: number, fy: number, baseH: number, team: Team, now: number): void {
-    const ctx = this.ctx;
-    const foot = this.P(fx, fy, baseH);
-    const poleH = 30;
-    const topY = foot.y - poleH;
-    // Mastro de latão.
-    ctx.strokeStyle = '#2a2420';
-    ctx.lineWidth = 2.6;
-    ctx.beginPath();
-    ctx.moveTo(foot.x, foot.y);
-    ctx.lineTo(foot.x, topY);
-    ctx.stroke();
-    ctx.strokeStyle = '#c9a54a';
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.moveTo(foot.x, foot.y);
-    ctx.lineTo(foot.x, topY);
-    ctx.stroke();
-    ctx.fillStyle = '#e8c45a';
-    ctx.beginPath();
-    ctx.arc(foot.x, topY - 1.5, 2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Pano: tiras verticais, cada uma deslocada pela onda; a ponta balança mais.
-    const len = 22;
-    const hgt = 13;
-    const N = 12;
-    const seed = team === 'azul' ? 0 : 1.7;
-    const wave = (i: number) => {
-      const u = i / N;
-      const gust = 1 + 0.35 * Math.sin(now / 1300 + seed);
-      return Math.sin(now / 170 - u * 4.2 + seed) * 2.4 * u * gust + Math.sin(now / 90 - u * 7 + seed) * 0.6 * u;
-    };
-    const top: Pt[] = [];
-    const bot: Pt[] = [];
-    for (let i = 0; i <= N; i++) {
-      const u = i / N;
-      const dy = wave(i);
-      const droop = u * u * 2.5;
-      top.push({ x: foot.x + u * len, y: topY + 1 + dy + droop });
-      bot.push({ x: foot.x + u * len * 0.97, y: topY + 1 + hgt + dy + droop * 1.3 });
-    }
-    const light = TEAM_LIGHT[team];
-    const dark = TEAM_DARK[team];
-    for (let i = 0; i < N; i++) {
-      // Sombra pela inclinação da onda: dobras alternam claro e escuro.
-      const slope = wave(i + 1) - wave(i);
-      const c = slope > 0.15 ? dark : slope < -0.15 ? light : TEAM_COLOR[team];
-      ctx.fillStyle = c;
-      ctx.beginPath();
-      ctx.moveTo(top[i].x, top[i].y);
-      ctx.lineTo(top[i + 1].x + 0.4, top[i + 1].y);
-      ctx.lineTo(bot[i + 1].x + 0.4, bot[i + 1].y);
-      ctx.lineTo(bot[i].x, bot[i].y);
-      ctx.closePath();
-      ctx.fill();
-    }
-    // Emblema: engrenagem simples no meio do pano.
-    const mid = Math.round(N * 0.45);
-    const cx = (top[mid].x + bot[mid].x) / 2;
-    const cy = (top[mid].y + bot[mid].y) / 2;
-    ctx.fillStyle = 'rgba(245, 235, 210, 0.9)';
-    ctx.beginPath();
-    for (let k = 0; k < 16; k++) {
-      const r = k % 2 === 0 ? 3.6 : 2.6;
-      const a = (k / 16) * Math.PI * 2;
-      if (k === 0) ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
-      else ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
-    }
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = TEAM_COLOR[team];
-    ctx.beginPath();
-    ctx.arc(cx, cy, 1.2, 0, Math.PI * 2);
-    ctx.fill();
-    // Contorno fino.
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 0.8;
-    ctx.beginPath();
-    ctx.moveTo(top[0].x, top[0].y);
-    for (const p of top) ctx.lineTo(p.x, p.y);
-    for (let i = N; i >= 0; i--) ctx.lineTo(bot[i].x, bot[i].y);
-    ctx.stroke();
-  }
-
-  private drawBarricade(x: number, y: number, team: Team, hp: number): void {
-    this.box(x + 0.1, y + 0.35, x + 0.9, y + 0.65, 0, 12, '#8a7660', '#5d4c3b', '#6f5d4a');
-    const ctx = this.ctx;
-    const a = this.P(x + 0.1, y + 0.65, 6);
-    const b = this.P(x + 0.9, y + 0.65, 6);
-    ctx.strokeStyle = TEAM_COLOR[team];
-    ctx.lineWidth = 2;
+    const a = this.P(fx, fy, 0);
+    const b = this.P(fx, fy, H);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
-    const top = this.P(x + 0.5, y + 0.5, 22);
-    this.bar(top.x - 12, top.y, 24, 3, hp / 15, '#c9a227');
-  }
-
-  private drawSmoke(x: number, y: number, now: number): void {
-    const ctx = this.ctx;
-    for (const [fx, fy, r] of [
-      [0.3, 0.4, 9],
-      [0.7, 0.5, 10],
-      [0.5, 0.75, 8],
-    ]) {
-      const c = this.P(x + fx, y + fy, 10 + 3 * Math.sin(now / 500 + x + fx * 4));
-      ctx.fillStyle = 'rgba(205, 205, 215, 0.33)';
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  private drawUnit(s: GameState, u: Unit, p: { x: number; y: number }, h: Highlights): void {
-    const ctx = this.ctx;
-    const def = CLASSES[u.cls];
-    const e = this.elev(s, Math.round(p.x), Math.round(p.y));
-    const g = this.P(p.x + 0.5, p.y + 0.5, e);
-    const dim = u.activated && h.activeId !== u.id;
-    const isActive = h.activeId === u.id;
-    const isSelected = h.selectedId === u.id;
-
-    // Anel de seleção no chão.
-    if (isActive || isSelected) {
-      ctx.strokeStyle = isActive ? '#ffd25a' : 'rgba(255,255,255,0.85)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.ellipse(g.x, g.y, 15, 7, 0, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    // Sombra.
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.strokeStyle = '#1a1418';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.ellipse(g.x + 2, g.y + 1, 11, 4.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Para onde está virada: seta no chão.
-    const [dx, dy] = DIR_VEC[u.facing];
-    const tip = this.P(p.x + 0.5 + dx * 0.48, p.y + 0.5 + dy * 0.48, e);
-    const l = this.P(p.x + 0.5 + dx * 0.28 - dy * 0.14, p.y + 0.5 + dy * 0.28 - dx * 0.14, e);
-    const r = this.P(p.x + 0.5 + dx * 0.28 + dy * 0.14, p.y + 0.5 + dy * 0.28 + dx * 0.14, e);
-    this.poly([tip, l, r], dim ? 'rgba(236,228,207,0.45)' : '#ece4cf');
-
-    ctx.globalAlpha = dim ? 0.55 : 1;
-    const lv = u.level;
-    // Base no chão na cor do time; a borda engrossa e vira latão/ouro conforme o level.
-    ctx.save();
-    if (lv >= 5) {
-      ctx.shadowColor = rgba(TEAM_LIGHT[u.team], 0.9);
-      ctx.shadowBlur = 10;
-    }
-    ctx.fillStyle = rgba(TEAM_COLOR[u.team], 0.55);
-    ctx.beginPath();
-    ctx.ellipse(g.x, g.y, 12, 5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-    ctx.lineWidth = 1 + (lv - 1) * 0.6;
-    ctx.strokeStyle = lv >= 5 ? '#ffd25a' : lv >= 3 ? '#d0a53a' : lv >= 2 ? '#ece4cf' : TEAM_LIGHT[u.team];
-    ctx.beginPath();
-    ctx.ellipse(g.x, g.y, 12, 5, 0, 0, Math.PI * 2);
+    ctx.moveTo(a.x + 1.5, a.y);
+    ctx.lineTo(b.x + 1.5, b.y);
     ctx.stroke();
-    if (lv >= 4) {
-      // Rebites de latão na borda.
-      ctx.fillStyle = lv >= 5 ? '#ffd25a' : '#c9a227';
-      for (const a of [0.3, 1.25, 2.2, 3.45, 4.4, 5.35]) {
-        ctx.beginPath();
-        ctx.arc(g.x + Math.cos(a) * 12, g.y + Math.sin(a) * 5, 1.3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
+  }
 
-    // Sprite em pixel art, virado para onde a unidade olha (E e S apontam para a direita da tela).
-    const spr = spriteCanvas(u.cls, u.team);
-    const scale = SPRITE_SCALE;
-    const flip = u.facing === 'W' || u.facing === 'N';
-    const bob = isActive && !this.anim ? Math.round(Math.sin(performance.now() / 260) * 1) : 0;
-    const sw = spr.width * scale;
-    const sh = spr.height * scale;
-    const ax = spriteAnchor(u.cls) * scale;
-    const topY = g.y - sh + 3 * scale - bob;
-    ctx.save();
-    ctx.imageSmoothingEnabled = false;
-    if (lv >= 5) {
-      ctx.shadowColor = rgba(TEAM_LIGHT[u.team], 0.85);
-      ctx.shadowBlur = 8;
-    } else if (lv >= 3) {
-      ctx.shadowColor = 'rgba(255, 210, 90, 0.45)';
-      ctx.shadowBlur = 4;
-    }
-    if (flip) {
-      ctx.translate(g.x, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(spr, -ax, topY, sw, sh);
-    } else {
-      ctx.drawImage(spr, g.x - ax, topY, sw, sh);
-    }
-    ctx.restore();
-    const bw = 24;
-    const bh = sh - 3 * scale;
-    const left = g.x - bw / 2;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
-    // Barras e marcas acima da cabeça.
-    const hy = topY - 8;
-    this.bar(g.x - 14, hy, 28, 4, u.hp / u.maxHp, '#7fd36b');
-    this.bar(g.x - 14, hy + 5, 28, 2, u.stamina / def.stamina, '#e8c547');
-    if (u.level > 1) {
-      ctx.fillStyle = '#1b1d22';
-      ctx.fillRect(g.x - 27, hy - 2, 11, 11);
-      ctx.fillStyle = '#ffd25a';
-      ctx.font = 'bold 10px system-ui, sans-serif';
-      ctx.fillText(String(u.level), g.x - 21.5, hy + 3.5);
-    }
-    u.items.forEach((it, i) => {
-      ctx.fillStyle = it === 'tonico' ? '#6fd58a' : it === 'foco' ? '#b88cf0' : '#f0a050';
-      ctx.fillRect(g.x + 16, hy - 1 + i * 5, 4, 4);
-    });
-    if (u.ready) {
-      ctx.fillStyle = '#ffd25a';
-      ctx.font = 'bold 12px system-ui, sans-serif';
-      ctx.fillText('!', g.x + bw / 2 + 3, topY + 4);
-    }
-    if (u.oil || u.focus || u.tauntBy || s.phase <= u.stuckUntil) {
-      ctx.fillStyle = u.tauntBy || s.phase <= u.stuckUntil ? '#ff7a6a' : '#c9e7ff';
-      ctx.beginPath();
-      ctx.arc(left + 2, topY + bh - 6, 3, 0, Math.PI * 2);
-      ctx.fill();
+  private drawParticles(now: number): void {
+    const ctx = this.ctx;
+    this.particles = this.particles.filter((p) => now - p.t0 < p.life);
+    for (const p of this.particles) {
+      const t = (now - p.t0) / 1000;
+      const fx = p.x + p.vx * t;
+      const fy = p.y + p.vy * t;
+      const hgt = 20 * t * 3 - p.g * 60 * t * t * 10 + 10;
+      const pt = this.P(fx, fy, Math.max(0, hgt));
+      ctx.globalAlpha = 1 - (now - p.t0) / p.life;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(pt.x, pt.y, p.size, p.size);
     }
     ctx.globalAlpha = 1;
   }
 
-  private bar(x: number, y: number, w: number, hgt: number, frac: number, color: string): void {
+  private drawBalloons(now: number): void {
     const ctx = this.ctx;
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(x, y, w, hgt);
-    const f = Math.max(0, Math.min(1, frac));
-    let c = color;
-    if (color === '#7fd36b') c = f > 0.5 ? color : f > 0.25 ? '#e0b04a' : '#e05a4a';
-    ctx.fillStyle = c;
-    ctx.fillRect(x, y, w * f, hgt);
+    this.balloons = this.balloons.filter((b) => now - b.t0 < 1300);
+    for (const b of this.balloons) {
+      const d = this.disp.get(b.id);
+      if (!d) continue;
+      const t = (now - b.t0) / 1300;
+      const pop = t < 0.15 ? t / 0.15 : 1;
+      const g = this.P(d.x, d.y, d.h + 62 + t * 6);
+      ctx.save();
+      ctx.globalAlpha = t > 0.8 ? (1 - t) / 0.2 : 1;
+      ctx.translate(g.x + 12, g.y);
+      ctx.scale(pop, pop);
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#1a1418';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(-10, -10, 20, 16, 5);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-5, 6);
+      ctx.lineTo(-9, 11);
+      ctx.lineTo(0, 6);
+      ctx.fill();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 12px system-ui, sans-serif';
+      const map: Record<Emote, [string, string]> = {
+        '!': ['!', '#d63a2f'],
+        '?': ['?', '#2f6fd8'],
+        suor: ['💧', '#2f6fd8'],
+        coracao: ['♥', '#e8455a'],
+        raiva: ['💢', '#d63a2f'],
+        estrela: ['★', '#e8b800'],
+        musica: ['♪', '#7a3fd0'],
+      };
+      const [ch, col] = map[b.emote];
+      ctx.fillStyle = col;
+      ctx.fillText(ch, 0, -2);
+      ctx.restore();
+    }
   }
 
-  private drawEffects(s: GameState, now: number): void {
+  private drawFloats(now: number): void {
     const ctx = this.ctx;
-    this.flashes = this.flashes.filter((f) => now - f.t0 < 500);
-    for (const f of this.flashes) {
-      const a = 1 - (now - f.t0) / 500;
-      for (const c of f.cells) this.poly(this.quad(c.x, c.y, this.elev(s, c.x, c.y)), `rgba(255, 190, 90, ${0.65 * a})`);
-    }
-    this.shots = this.shots.filter((sh) => now - sh.t0 < 350);
-    for (const sh of this.shots) {
-      const a = 1 - (now - sh.t0) / 350;
-      const p = this.P(sh.from.x + 0.5, sh.from.y + 0.5, this.elev(s, sh.from.x, sh.from.y) + 16);
-      const q = this.P(sh.to.x + 0.5, sh.to.y + 0.5, this.elev(s, sh.to.x, sh.to.y) + 16);
-      ctx.strokeStyle = `rgba(255, 240, 200, ${a})`;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-      ctx.lineTo(q.x, q.y);
-      ctx.stroke();
-    }
-    this.floats = this.floats.filter((fl) => now - fl.t0 < 1100);
-    for (const fl of this.floats) {
-      const t = (now - fl.t0) / 1100;
-      if (t < 0) continue;
-      const p = this.P(fl.x + 0.5, fl.y + 0.5, this.elev(s, fl.x, fl.y) + 40 + t * 22);
+    this.floats = this.floats.filter((f) => now - f.t0 < 1000);
+    for (const f of this.floats) {
+      const t = (now - f.t0) / 1000;
+      const p = this.P(f.x + 0.5, f.y + 0.5, 50 + t * 20);
       ctx.globalAlpha = 1 - t;
-      ctx.font = 'bold 15px system-ui, sans-serif';
+      ctx.font = 'bold 12px system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
       ctx.lineWidth = 3;
-      ctx.strokeText(fl.text, p.x, p.y);
-      ctx.fillStyle = fl.color;
-      ctx.fillText(fl.text, p.x, p.y);
-      ctx.globalAlpha = 1;
+      ctx.strokeStyle = '#1a1418';
+      ctx.strokeText(f.text, p.x, p.y);
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text, p.x, p.y);
     }
+    ctx.globalAlpha = 1;
+  }
+
+  private drawBanners(now: number): void {
+    const ctx = this.ctx;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    this.banners = this.banners.filter((b) => now - b.t0 < b.dur);
+    this.banners.forEach((b, i) => {
+      const t = (now - b.t0) / b.dur;
+      const slide = t < 0.12 ? 1 - t / 0.12 : t > 0.85 ? (t - 0.85) / 0.15 : 0;
+      const y = H * (b.big ? 0.42 : 0.22) + i * 40;
+      const x = W / 2 + slide * (t < 0.5 ? -W : W) * 0.6;
+      ctx.save();
+      ctx.translate(x, y);
+      const scale = b.big ? 1 + 0.06 * Math.sin(now / 80) : 1;
+      ctx.scale(scale, scale);
+      ctx.font = `900 ${b.big ? 54 : 26}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const w = ctx.measureText(b.text).width + 40;
+      ctx.fillStyle = 'rgba(10,10,20,0.72)';
+      ctx.fillRect(-w / 2, -(b.big ? 40 : 22), w, b.big ? (b.sub ? 96 : 80) : b.sub ? 58 : 44);
+      ctx.lineWidth = b.big ? 8 : 5;
+      ctx.strokeStyle = '#1a1418';
+      ctx.strokeText(b.text, 0, 0);
+      ctx.fillStyle = b.color;
+      ctx.fillText(b.text, 0, 0);
+      if (b.sub) {
+        ctx.font = `700 ${b.big ? 16 : 13}px system-ui, sans-serif`;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(b.sub, 0, b.big ? 40 : 24);
+      }
+      ctx.restore();
+    });
   }
 
   // ---------- Clique ----------
 
-  /** Centro da casa em coordenadas da página (usado pelos testes automatizados). */
-  clientPoint(x: number, y: number, s: GameState): Pt {
-    const w = this.P(x + 0.5, y + 0.5, this.elev(s, x, y));
-    const p = { x: w.x * this.cam.z + this.cam.tx, y: w.y * this.cam.z + this.cam.ty };
+  clientPoint(x: number, y: number): Pt {
+    const w = this.P(x + 0.5, y + 0.5);
+    const p = {
+      x: w.x * this.cam.z + this.cam.tx,
+      y: w.y * this.cam.z + this.cam.ty,
+    };
     const r = this.canvas.getBoundingClientRect();
-    return { x: r.left + (p.x / this.canvas.width) * r.width, y: r.top + (p.y / this.canvas.height) * r.height };
+    return {
+      x: r.left + (p.x / this.canvas.width) * r.width,
+      y: r.top + (p.y / this.canvas.height) * r.height,
+    };
   }
 
-  /** Casa sob o ponteiro: projeção inversa, conferindo colinas (que ficam mais altas). */
-  cellAt(clientX: number, clientY: number, s: GameState): Pos | null {
+  cellAt(clientX: number, clientY: number): Pos | null {
     const c = this.toCanvas(clientX, clientY);
     const sx = (c.x - this.cam.tx) / this.cam.z;
     const sy = (c.y - this.cam.ty) / this.cam.z;
@@ -1385,180 +1586,8 @@ export class Renderer {
     const det = AX * BY - BX * AY;
     const fx = (dx * BY - BX * dy) / det;
     const fy = (AX * dy - AY * dx) / det;
-    const guess = { x: Math.floor(fx), y: Math.floor(fy) };
-    // Uma colina mais à frente pode cobrir o ponto: testa as vizinhas, da frente para trás.
-    const candidates: Pos[] = [];
-    for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) candidates.push({ x: guess.x + ox, y: guess.y + oy });
-    candidates.sort((a, b) => depthOf(b.x + 0.5, b.y + 0.5) - depthOf(a.x + 0.5, a.y + 0.5));
-    for (const c of candidates) {
-      if (c.x < 0 || c.y < 0 || c.x >= s.width || c.y >= s.height) continue;
-      const e = this.elev(s, c.x, c.y);
-      if (e > 0 && inside({ x: sx, y: sy }, this.quad(c.x, c.y, e))) return c;
-    }
-    if (guess.x < 0 || guess.y < 0 || guess.x >= s.width || guess.y >= s.height) return null;
-    return guess;
+    const p = { x: Math.floor(fx), y: Math.floor(fy) };
+    if (p.x < 0 || p.y < 0 || p.x >= COURT_W || p.y >= COURT_H) return null;
+    return p;
   }
-}
-
-/** Profundidade na tela: quem tem o pé mais embaixo é desenhado por cima. */
-function depthOf(fx: number, fy: number): number {
-  return fx * AY + fy * BY;
-}
-
-function inside(p: Pt, poly: Pt[]): boolean {
-  let ins = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i];
-    const b = poly[j];
-    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) ins = !ins;
-  }
-  return ins;
-}
-
-function rgba(hex: string, a: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
-}
-
-function drawGear(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, angle: number, color: string): void {
-  const teeth = Math.max(8, Math.round(r / 5));
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(angle);
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  for (let i = 0; i < teeth * 2; i++) {
-    const rr = i % 2 === 0 ? r : r * 0.82;
-    const a0 = (i / (teeth * 2)) * Math.PI * 2;
-    const a1 = ((i + 1) / (teeth * 2)) * Math.PI * 2;
-    ctx.lineTo(Math.cos(a0) * rr, Math.sin(a0) * rr);
-    ctx.lineTo(Math.cos(a1) * rr, Math.sin(a1) * rr);
-  }
-  ctx.closePath();
-  ctx.moveTo(r * 0.35, 0);
-  ctx.arc(0, 0, r * 0.35, 0, Math.PI * 2, true);
-  ctx.fill('evenodd');
-  ctx.restore();
-}
-
-/** Clareia (amt > 0) ou escurece (amt < 0) uma cor #rrggbb. */
-function shade(hex: string, amt: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  const f = (c: number) => Math.max(0, Math.min(255, Math.round(amt >= 0 ? c + (255 - c) * amt : c * (1 + amt))));
-  const r = f((n >> 16) & 255);
-  const g = f((n >> 8) & 255);
-  const b = f(n & 255);
-  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
-}
-
-
-/** Número fixo (0–1) por casa, para cada nó girar e flutuar fora de sincronia. */
-function nodeSeed(x: number, y: number): number {
-  return frac(Math.sin(x * 127.1 + y * 311.7) * 43758.5453);
-}
-
-function frac(v: number): number {
-  return v - Math.floor(v);
-}
-
-/** Cor #rrggbb com transparência. */
-function hexA(hex: string, a: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${Math.max(0, Math.min(1, a)).toFixed(3)})`;
-}
-
-const fmt = (m: number): string => (Math.round(m * 100) / 100).toString().replace('.', ',');
-
-// ---------- Cores do chão ----------
-
-const GRASS = { h: 98, s: 30, l: 34 };
-const FOREST_GRASS = { h: 128, s: 34, l: 21 };
-const EARTH = { h: 34, s: 32, l: 33 };
-
-function buildGroundColors(s: GameState): string[][] {
-  const W = s.width;
-  const H = s.height;
-  const cellsOf = (pred: (t: Terrain) => boolean) => {
-    const out: Pos[] = [];
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (pred(s.terrain[y][x])) out.push({ x, y });
-    return out;
-  };
-  const forests = cellsOf((t) => t === 'floresta');
-  const hills = cellsOf((t) => t === 'colina' || t === 'lama');
-  const water = cellsOf((t) => t === 'agua');
-  const dist = (x: number, y: number, list: Pos[]) => list.reduce((m, c) => Math.min(m, Math.hypot(c.x - x, c.y - y)), Infinity);
-  const out: string[][] = [];
-  for (let y = 0; y < H; y++) {
-    const row: string[] = [];
-    for (let x = 0; x < W; x++) {
-      const t = s.terrain[y][x];
-      const n = valueNoise(x / 3.5, y / 3.5) - 0.5; // manchas grandes
-      const j = hash2(x, y) - 0.5; // variação de cada casa
-      let c: { h: number; s: number; l: number };
-      if (t === 'agua') c = { h: 210, s: 38, l: 22 + n * 3 };
-      else if (t === 'ponte') c = { h: 28, s: 22, l: 31 };
-      else if (t === 'colina') c = { h: 33 + j * 4, s: 30, l: 37 + n * 4 + j * 2 };
-      else if (t === 'lama') c = { h: 30, s: 30, l: 27 + j * 2 };
-      else if (t === 'floresta') c = { h: 130 + j * 6, s: 32, l: 19 + n * 3 + j * 2 };
-      else if (t === 'fonte') c = { h: 230, s: 10, l: 40 };
-      else {
-        // Campo: verde que escurece perto da mata e vira terra perto das colinas.
-        const f = Math.max(0, 1 - (dist(x, y, forests) - 1) / 2.5);
-        const e = Math.max(0, 1 - (dist(x, y, hills) - 1) / 2.2);
-        const w = Math.max(0, 1 - (dist(x, y, water) - 1) / 1.5);
-        c = { h: GRASS.h + n * 14 + j * 5, s: GRASS.s + n * 6, l: GRASS.l + n * 5 + j * 2.5 };
-        c = mixHsl(c, FOREST_GRASS, f * 0.75);
-        c = mixHsl(c, EARTH, e * 0.7);
-        // Beira do rio um pouco mais viçosa.
-        c = { ...c, s: c.s + w * 6, l: c.l + w * 2 };
-        if (t === 'ruina') c = mixHsl(c, { h: 60, s: 6, l: 33 }, 0.5);
-      }
-      row.push(hslHex(c.h, c.s, c.l));
-    }
-    out.push(row);
-  }
-  return out;
-}
-
-function mixHsl(a: { h: number; s: number; l: number }, b: { h: number; s: number; l: number }, k: number) {
-  return { h: a.h + (b.h - a.h) * k, s: a.s + (b.s - a.s) * k, l: a.l + (b.l - a.l) * k };
-}
-
-function hash2(x: number, y: number): number {
-  return frac(Math.sin(x * 157.31 + y * 271.97) * 43758.5453);
-}
-
-/** Ruído suave (valor interpolado entre pontos de uma grade). */
-function valueNoise(x: number, y: number): number {
-  const x0 = Math.floor(x);
-  const y0 = Math.floor(y);
-  const sx = x - x0;
-  const sy = y - y0;
-  const s = (t: number) => t * t * (3 - 2 * t);
-  const a = hash2(x0 + 50, y0 + 50);
-  const b = hash2(x0 + 51, y0 + 50);
-  const c = hash2(x0 + 50, y0 + 51);
-  const d = hash2(x0 + 51, y0 + 51);
-  const top = a + (b - a) * s(sx);
-  const bottom = c + (d - c) * s(sx);
-  return top + (bottom - top) * s(sy);
-}
-
-function hslHex(h: number, s: number, l: number): string {
-  s /= 100;
-  l /= 100;
-  const k = (n: number) => (n + h / 30) % 12;
-  const a = s * Math.min(l, 1 - l);
-  const f = (n: number) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
-  return `#${((1 << 24) | (f(0) << 16) | (f(8) << 8) | f(4)).toString(16).slice(1)}`;
-}
-
-function easeOutBack(p: number): number {
-  const c = 1.70158;
-  const q = p - 1;
-  return 1 + (c + 1) * q * q * q + c * q * q;
-}
-
-function easeIn(p: number): number {
-  return p * p;
 }

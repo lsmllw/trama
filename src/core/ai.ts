@@ -1,637 +1,410 @@
-// IA baseada em utilidade: dá nota a cada (unidade, casa, ação) e escolhe a melhor,
-// com ruído conforme a dificuldade. No Confronto, joga uma estratégia mista
-// que aprende com o histórico de lances do oponente.
+// IA do futsal: avalia a posição para cada time e simula as jogadas de cada jogador.
 
-import { aliveUnits, effectiveArmor, rawDamage, rangedDamage, sideMultiplier, sideOf, unitAtq } from './combat';
+import { CHUTE_BASE, COURT_W, ROLES } from './data';
+import { center, dist, distToGoal, getPlayer, holderOf, inArea, keeperOf, other, ownGoal, teamPlayers } from './court';
+import { LANCES, attrLances, canPlay, clash, markers, otherSide, resolveTempo } from './duelo';
+import type { DuelState, Lance, SideKey } from './duelo';
 import {
-  ANTITANK,
-  AREA_HEAL,
-  BASE_MELEE_MULT,
-  CLASSES,
-  LANCE_COST,
-  OLEO_ATQ,
-  RAM_BONUS,
-  REPAIR_AMOUNT,
-  RUN_BONUS,
-  RUN_COST,
-  TERRAIN,
-  TONICO_HEAL,
-} from './data';
-import { baseAt, canStop, crossCells, DIRS, dirFromTo, fromKey, getUnit, inBounds, manhattan, moveCost, reachable, terrainAt, unitAt } from './grid';
-import { nextRandom } from './rng';
-import {
-  attackArea,
-  attackBarricade,
-  attackBaseMelee,
-  attackMelee,
-  attackRanged,
-  attackRangedBase,
-  baseMovement,
+  activatable,
+  applyDuel,
   beginActivation,
-  canUseItem,
-  collect,
+  canSprint,
+  canUseSpecial,
+  createGame,
   currentTargets,
+  destinations,
   endActivation,
-  heal,
+  endPhase,
   moveTo,
-  run,
-  targetsFrom,
-  useItem,
+  pass,
+  passPreview,
+  shoot,
+  shotPreview,
+  shotResult,
+  sprint,
+  startDribble,
+  startTackle,
+  takeDirectKick,
+  useSpecial,
 } from './game';
-import type { Target } from './game';
-import { abilityBlock, abilityOf, abilityTargets, currentAbilityTargets, useAbility } from './abilities';
-import type { AbilityTarget } from './abilities';
-import { canSpend, clash, confrontoHit, countLances, finishConfronto, hitDamage, resolveTempo, sideUnit, useRead } from './confronto';
-import type { ConfrontoState, Lance, SideKey } from './confronto';
-import { otherTeam } from './types';
-import type { GameState, NodeColor, Pos, Team, Unit } from './types';
+import type { ShotPreview } from './game';
+import { nextRandom } from './rng';
+import type { Corner, GameState, Player, Pos, Team } from './types';
 
 export type Difficulty = 'recruta' | 'veterano';
+const CORNERS: Corner[] = ['esq', 'meio', 'dir'];
 
-interface Profile {
-  /** Ruído somado à nota de cada jogada. */
-  noise: number;
-  /** Temperatura do softmax na escolha de lance. */
-  temperature: number;
-  /** Usa o histórico de lances do oponente. */
-  learns: boolean;
-  /** Chance de errar de propósito quando lê o oponente. */
-  blunder: number;
+// ---------- Avaliação ----------
+
+/** Chance de gol de um chute, com os dois lados escolhendo canto ao acaso. */
+export function goalChance(pv: ShotPreview): number {
+  if (!pv.ok) return 0;
+  if (pv.blockerId) return 0.02;
+  if (pv.open) return 0.95;
+  let total = 0;
+  for (const c of CORNERS) for (const d of CORNERS) if (shotResult(pv, c, d) === 'gol') total++;
+  let p = total / 9;
+  if (pv.shooterReads) p = Math.max(p, 0.85);
+  if (pv.keeperReads) p = Math.min(p, 0.1);
+  return p;
 }
 
-const PROFILES: Record<Difficulty, Profile> = {
-  recruta: { noise: 7, temperature: 4, learns: false, blunder: 0.35 },
-  veterano: { noise: 1.5, temperature: 1.2, learns: true, blunder: 0.05 },
-};
+function shotQuality(s: GameState, p: Player): number {
+  return goalChance(shotPreview(s, p));
+}
 
-/** Memória de lances do oponente (o jogador), acumulada na partida. */
+/** Quão perigosa é a posse do time `team` neste momento (0 a ~60). */
+function possessionValue(s: GameState, team: Team): number {
+  const h = holderOf(s);
+  let v = 0;
+  v += 22 * (1 - Math.min(1, distToGoal(h, team) / COURT_W));
+  v += 34 * shotQuality(s, h);
+  v -= 7 * markers(s, h).length;
+  let best = 0;
+  let safe = 0;
+  for (const q of teamPlayers(s, team)) {
+    if (q.id === h.id) continue;
+    for (const alto of [false, true]) {
+      const pv = passPreview(s, h, q, alto);
+      if (!pv.ok || pv.result !== 'ok') continue;
+      safe++;
+      best = Math.max(best, 20 * shotQuality(s, q) + 8 * (1 - Math.min(1, distToGoal(q, team) / COURT_W)) - 3 * markers(s, q).length);
+      break;
+    }
+  }
+  v += best + 2 * Math.min(3, safe);
+  return v;
+}
+
+/** Valor da posição para `team` (positivo = bom). */
+export function evaluate(s: GameState, team: Team): number {
+  if (s.over) return s.winner === team ? 1000 : s.winner === 'empate' ? 0 : -1000;
+  const h = holderOf(s);
+  const mine = h.team === team;
+  let v = (mine ? 1 : -1) * (14 + possessionValue(s, h.team));
+  v += 120 * (s.score[team] - s.score[other(team)]);
+  // Goleiro em casa: perto do centro do gol e entre a bola e o gol.
+  const gk = keeperOf(s, team);
+  if (gk) v -= 1.5 * dist(center(gk), ownGoal(team)) + (inArea(team, gk) ? 0 : 25);
+  return v;
+}
+
+const clone = (s: GameState): GameState => structuredClone({ ...s, events: [], log: [] });
+
+// ---------- Duelo ----------
+
+/** Chance aproximada de cada resultado do Duelo (ajustada com simulações de duelos). */
+export function duelOdds(s: GameState, ball: Player, mark: Player, markInitiates: boolean): { ballWins: number; markWins: number; foul: number } {
+  const lb = Math.max(1, attrLances(ROLES[ball.role].dom) - (markers(s, ball).length >= 2 ? 1 : 0)) + (ball.pedalada ? 0.7 : 0);
+  const lm = attrLances(ROLES[mark.role].mar) + (!markInitiates && mark.ready ? 1 : 0);
+  const d = lb - lm;
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  if (markInitiates) {
+    const markWins = lm >= 2 ? clamp(0.19 - 0.09 * d, 0.03, 0.6) : 0.02;
+    const foul = lm >= 3 ? 0.15 : 0.05;
+    return { ballWins: clamp(0.45 + 0.1 * d, 0.1, 0.85), markWins, foul };
+  }
+  return { ballWins: clamp(0.17 + 0.25 * d, 0.06, 0.75), markWins: clamp(0.4 - 0.17 * d, 0.05, 0.65), foul: 0.12 };
+}
+
 export interface LanceMemory {
   golpe: number;
   guarda: number;
   finta: number;
+  esperar: number;
 }
-export const newMemory = (): LanceMemory => ({ golpe: 0, guarda: 0, finta: 0 });
 
-/** Ação planejada: alvo comum, item (pelo índice), habilidade (pela casa) ou nada. */
+export function newMemory(): LanceMemory {
+  return { golpe: 1, guarda: 1, finta: 1, esperar: 1 };
+}
+
+/** Escolhe um lance para o lado `k`, prevendo o adversário pela memória (ou vendo o lance dele). */
+export function chooseLance(s: GameState, cs: DuelState, k: SideKey, mem: LanceMemory, seen: Lance | null, diff: Difficulty = 'veterano'): Lance {
+  const options = LANCES.filter((l) => canPlay(s, cs, k, l));
+  const theirs = LANCES.filter((l) => canPlay(s, cs, otherSide(k), l));
+  const total = theirs.reduce((n, l) => n + mem[l], 0);
+  const markSide = otherSide(cs.ball);
+  const payoff = (mine: Lance, their: Lance): number => {
+    const a = k === 'atk' ? mine : their;
+    const d = k === 'atk' ? their : mine;
+    const c = clash(a, d, ROLES[getPlayer(s, cs.atk.playerId).role].weight, ROLES[getPlayer(s, cs.def.playerId).role].weight);
+    const mineGain = k === 'atk' ? c.aGain : c.bGain;
+    const theirGain = k === 'atk' ? c.bGain : c.aGain;
+    let v = mineGain - theirGain;
+    const markL = markSide === 'atk' ? a : d;
+    const ballL = cs.ball === 'atk' ? a : d;
+    if (markL === 'golpe' && ballL === 'guarda') v += k === markSide ? -2 : 2; // falta
+    if (mine !== 'esperar') v -= 0.08; // fôlego
+    if (mine === 'finta') v -= 0.1; // HAB
+    return v;
+  };
+  const ev = options.map((m) => {
+    if (seen) return { m, v: payoff(m, seen) };
+    return { m, v: theirs.reduce((n, l) => n + (mem[l] / total) * payoff(m, l), 0) };
+  });
+  const temp = seen ? 0.05 : diff === 'recruta' ? 0.9 : 0.45;
+  const mx = Math.max(...ev.map((e) => e.v));
+  const w = ev.map((e) => Math.exp((e.v - mx) / temp));
+  let r = nextRandom(s) * w.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < ev.length; i++) {
+    r -= w[i];
+    if (r <= 0) return ev[i].m;
+  }
+  return ev.at(-1)!.m;
+}
+
+/** Joga um Duelo inteiro entre duas IAs (ou a IA contra si mesma em simulações). */
+export function autoDuel(s: GameState, cs: DuelState, mem: LanceMemory, diff: Difficulty = 'veterano'): void {
+  while (!cs.done) {
+    const a = chooseLance(s, cs, 'atk', mem, null, diff);
+    const d = chooseLance(s, cs, 'def', mem, null, diff);
+    resolveTempo(s, cs, a, d);
+  }
+}
+
+// ---------- Chute ----------
+
+/** Canto do chute da IA (melhor contra um goleiro que escolhe ao acaso, com um pouco de sorte). */
+export function chooseCorner(s: GameState, pv: ShotPreview): Corner {
+  const score = CORNERS.map((c) => CORNERS.filter((d) => shotResult(pv, c, d) === 'gol').length + nextRandom(s) * 0.9);
+  return CORNERS[score.indexOf(Math.max(...score))];
+}
+
+/** Mergulho da IA: cantos um pouco mais prováveis que o meio. */
+export function chooseDive(s: GameState): Corner {
+  const r = nextRandom(s);
+  return r < 0.37 ? 'esq' : r < 0.74 ? 'dir' : 'meio';
+}
+
+// ---------- Planejamento ----------
+
 export type PlannedAction =
-  | Target
-  | { kind: 'item'; index: number }
-  | { kind: 'habilidade'; x: number; y: number }
-  | null;
+  | { kind: 'passe'; toId: string; alto: boolean }
+  | { kind: 'chute'; bomba: boolean }
+  | { kind: 'drible'; targetId: string }
+  | { kind: 'desarme'; targetId: string }
+  | { kind: 'carrinho'; targetId: string }
+  | { kind: 'muralha' }
+  | { kind: 'pedalada-drible'; targetId: string };
 
 export interface Plan {
-  unitId: string;
-  run: boolean;
-  moveTo: Pos | null;
-  action: PlannedAction;
-  /** Cor escolhida ao coletar na Fonte Prismática. */
-  color?: Exclude<NodeColor, 'prisma'>;
+  playerId: string;
+  sprint: boolean;
+  move: Pos | null;
+  action: PlannedAction | null;
   score: number;
 }
 
-// ---------- Avaliação ----------
-
-/** Pesos da avaliação de posição (ajustáveis em scripts/tune.ts). */
-export const AI_WEIGHTS = {
-  /** Quanto pesa o dano que a casa pode receber na próxima fase inimiga. */
-  threat: 0.25,
-  /** Penalidade por casa de distância do aliado mais próximo acima de 2 (andar em grupo). */
-  cohesion: 0,
-  /** Quanto pesa se aproximar do objetivo. */
-  advance: 0.8,
-  /** Penalidade por terminar numa casa onde pode morrer. */
-  deathRisk: 8,
-  /** A partir desta rodada a cautela cai, até sobrar `minCaution` no fim da partida. */
-  boldFrom: 3,
-  minCaution: 0.1,
-};
-
-/** Fator de cautela: 1 no começo, caindo até `minCaution` perto da última rodada. */
-function caution(s: GameState): number {
-  const span = Math.max(1, s.maxRounds - AI_WEIGHTS.boldFrom);
-  const t = Math.min(1, Math.max(0, (s.round - AI_WEIGHTS.boldFrom) / span));
-  return 1 - t * (1 - AI_WEIGHTS.minCaution);
-}
-
-const unitValue = (u: Unit) => CLASSES[u.cls].atq + u.maxHp / 4;
-
-/**
- * Mapa de perigo: para cada casa, quanto ATQ inimigo consegue chegar nela na próxima fase
- * (movimento real pelo terreno + alcance de ataque). Calculado uma vez por decisão.
- */
-export type ThreatMap = Float32Array;
-
-export function buildThreatMap(s: GameState, team: Team): ThreatMap {
-  const map = new Float32Array(s.width * s.height);
-  for (const e of aliveUnits(s, otherTeam(team))) {
-    const d = CLASSES[e.cls];
-    const mp = baseMovement(s, e) + (e.stamina >= RUN_COST ? RUN_BONUS : 0);
-    const reach = reachable(s, e, mp);
-    const minR = d.melee ? 1 : d.ranged ? d.ranged.min : 1;
-    const maxR = d.ranged ? d.ranged.max : 1;
-    const power = unitAtq(e) * (d.melee ? 1.6 : d.ranged ? d.ranged.mult : 1);
-    const marked = new Uint8Array(s.width * s.height);
-    for (const k of reach.keys()) {
-      const p = fromKey(s, k);
-      if (!canStop(s, e, p.x, p.y)) continue;
-      for (let dy = -maxR; dy <= maxR; dy++)
-        for (let dx = -maxR; dx <= maxR; dx++) {
-          const dist = Math.abs(dx) + Math.abs(dy);
-          if (dist < minR || dist > maxR) continue;
-          const x = p.x + dx;
-          const y = p.y + dy;
-          if (x < 0 || y < 0 || x >= s.width || y >= s.height) continue;
-          marked[y * s.width + x] = 1;
-        }
+/** Valor esperado de uma ação, simulando o resultado (os sorteios viram médias). */
+function actionValue(s: GameState, team: Team, act: PlannedAction): number {
+  const p = getPlayer(s, s.activation!.playerId);
+  if (act.kind === 'passe') {
+    const t = clone(s);
+    const out = pass(t, act.toId, act.alto);
+    if (out.duel) {
+      const ball = getPlayer(t, out.duel[out.duel.ball].playerId);
+      const mark = getPlayer(t, out.duel[otherSide(out.duel.ball)].playerId);
+      const o = duelOdds(t, ball, mark, true);
+      const vKeep = evaluate(t, team);
+      t.holder = mark.id;
+      const vLose = evaluate(t, team);
+      return (1 - o.markWins) * vKeep + o.markWins * vLose;
     }
-    for (let i = 0; i < marked.length; i++) if (marked[i]) map[i] += power;
+    return evaluate(t, team);
   }
-  return map;
-}
-
-/** Dano estimado que quem ficar em `cell` pode levar na próxima fase inimiga. */
-function threatAt(s: GameState, threat: ThreatMap, cell: Pos, armor: number): number {
-  const raw = threat[cell.y * s.width + cell.x];
-  return raw > 0 ? Math.max(1, raw - armor * 1.5) : 0;
-}
-
-function strikeDanger(s: GameState, cell: Pos, armor: number): number {
-  let danger = 0;
-  for (const st of s.strikes) {
-    if (st.cells.some((c) => c.x === cell.x && c.y === cell.y)) danger += rawDamage(st.atq, st.mult, armor);
+  if (act.kind === 'chute') {
+    const pv = shotPreview(s, p, act.bomba);
+    const q = goalChance(pv);
+    const tg = clone(s);
+    tg.score[team]++;
+    const vGoal = evaluate(tg, team) - 40; // o adversário sai com a bola
+    const tm = clone(s);
+    tm.holder = pv.blockerId ?? pv.keeperId ?? tm.holder;
+    const vMiss = evaluate(tm, team);
+    return q * vGoal + (1 - q) * vMiss + (act.bomba ? -4 : 0);
   }
-  return danger;
-}
-
-/** Estimativa grosseira do saldo de um Confronto iniciado de `from`. */
-function estimateMelee(s: GameState, u: Unit, from: Pos, target: Unit, bonusLances = 0, bonusAtq = 0): number {
-  const ox = u.x;
-  const oy = u.y;
-  u.x = from.x;
-  u.y = from.y;
-  const c = countLances(s, u, target, bonusLances);
-  u.tempAtq = bonusAtq + (u.oil ? OLEO_ATQ : 0);
-  const hitA = hitDamage(s, u, target, 1.75, sideMultiplier(u, target, c.side));
-  u.tempAtq = 0;
-  const hitD = hitDamage(s, target, u, 1.75);
-  u.x = ox;
-  u.y = oy;
-  const wa = CLASSES[u.cls].weight;
-  const wd = CLASSES[target.cls].weight;
-  const aL = Math.min(c.atk.lances, Math.floor(u.stamina / LANCE_COST[wa]));
-  const dL = Math.min(c.def.lances, Math.floor(target.stamina / LANCE_COST[wd]));
-  // Quem tem mais lances acerta mais; quem não tem lance apanha de Finta.
-  const dealt = aL * 0.5 * hitA + Math.max(0, aL - dL) * 0.2 * hitA;
-  const taken = dL * 0.5 * hitD;
-  let score = dealt - taken * 0.8;
-  if (dealt >= target.hp) score += 12 + unitValue(target);
-  if (taken >= u.hp) score -= 15;
-  return score;
-}
-
-function areaScore(s: GameState, u: Unit, from: Pos, x: number, y: number): number {
-  const def = CLASSES[u.cls];
-  const r = def.ranged!;
-  const delayed = r.kind === 'morteiro';
-  const atq = unitAtq(u);
-  let score = 0;
-  for (const c of crossCells(s, x, y)) {
-    const isSelf = c.x === from.x && c.y === from.y;
-    const occ = isSelf ? u : s.units.find((v) => v.alive && v.id !== u.id && v.x === c.x && v.y === c.y);
-    if (occ) {
-      const ignore = !delayed && CLASSES[occ.cls].vehicle ? ANTITANK.granadaArmorIgnore : 0;
-      const dmg = rawDamage(atq, r.mult, effectiveArmor(s, occ) * (1 - ignore));
-      if (occ.team === u.team) score -= dmg * (delayed ? 0.8 : 1.5);
-      else score += (dmg + (dmg >= occ.hp ? 10 : 0)) * (delayed ? 0.55 : 1);
+  if (act.kind === 'drible' || act.kind === 'pedalada-drible') {
+    const t = clone(s);
+    if (act.kind === 'pedalada-drible') getPlayer(t, p.id).pedalada = true;
+    const mark = getPlayer(t, act.targetId);
+    const o = duelOdds(t, getPlayer(t, p.id), mark, false);
+    const win = clone(t);
+    const wp = getPlayer(win, p.id);
+    const wm = getPlayer(win, mark.id);
+    const to = { x: wm.x + Math.sign(wm.x - wp.x), y: wm.y + Math.sign(wm.y - wp.y) };
+    if (to.x >= 0 && to.y >= 0 && to.x < win.width && to.y < win.height && !win.players.some((q) => q.x === to.x && q.y === to.y)) {
+      wp.x = to.x;
+      wp.y = to.y;
     }
-    const eb = s.bases[otherTeam(u.team)];
-    if (eb.x === c.x && eb.y === c.y) score += rawDamage(atq, r.mult, eb.armadura) * 1.6;
-    const ob = s.bases[u.team];
-    if (ob.x === c.x && ob.y === c.y) score -= 20;
+    wm.unbalanced = true;
+    const vWin = evaluate(win, team) + 6;
+    const lose = clone(t);
+    lose.holder = mark.id;
+    const vLose = evaluate(lose, team);
+    const vKeep = evaluate(t, team) - 3;
+    return o.ballWins * vWin + o.markWins * vLose + (1 - o.ballWins - o.markWins) * vKeep - (act.kind === 'pedalada-drible' ? 2 : 0);
   }
-  return score;
-}
-
-function actionScore(s: GameState, u: Unit, from: Pos, t: Target): number {
-  const def = CLASSES[u.cls];
-  const atq = unitAtq(u) + (u.oil ? OLEO_ATQ : 0);
-  switch (t.kind) {
-    case 'melee':
-      return estimateMelee(s, u, from, getUnit(s, t.unitId));
-    case 'meleeBase':
-    case 'tiroBase': {
-      const b = s.bases[t.team];
-      const mult = t.kind === 'meleeBase' ? BASE_MELEE_MULT : def.ranged!.mult;
-      const dmg = rawDamage(atq, mult, b.armadura);
-      return dmg * 1.6 + (dmg >= b.hp ? 1000 : 0);
-    }
-    case 'tiro': {
-      const target = getUnit(s, t.unitId);
-      const dmg = rangedDamage(s, atq, def.ranged!.mult, target, sideOf(u, from, target).mult);
-      return dmg * 1.1 + (dmg >= target.hp ? 12 + unitValue(target) : 0);
-    }
-    case 'barricada':
-      return 1;
-    case 'area':
-      return areaScore(s, u, from, t.x, t.y);
-    case 'cura': {
-      const target = getUnit(s, t.unitId);
-      const missing = target.maxHp - target.hp;
-      return missing >= 4 ? Math.min(def.heal!.amount, missing) * 1.3 : 0;
-    }
-    case 'coleta':
-      return u.items.length >= 2 ? 0 : 3.5 + (u.items.length === 0 ? 1 : 0);
+  if (act.kind === 'desarme' || act.kind === 'carrinho') {
+    const h = holderOf(s);
+    const t = clone(s);
+    const o = duelOdds(t, getPlayer(t, h.id), getPlayer(t, p.id), true);
+    const steal = clone(t);
+    steal.holder = p.id;
+    const vSteal = evaluate(steal, team);
+    const fail = clone(t);
+    getPlayer(fail, p.id).unbalanced = true;
+    const vFail = evaluate(fail, team);
+    const foulV = vFail - (t.fouls[team] >= 4 ? 25 : 6);
+    return o.markWins * vSteal + o.ballWins * vFail + o.foul * foulV + (1 - o.markWins - o.ballWins - o.foul) * evaluate(t, team) - (act.kind === 'carrinho' ? 3 : 0);
   }
-}
-
-function nearestEnemyDist(s: GameState, u: Unit, from: Pos): number {
-  const enemies = aliveUnits(s, otherTeam(u.team));
-  return enemies.length ? Math.min(...enemies.map((e) => manhattan(from, e))) : 99;
-}
-
-function itemScore(s: GameState, u: Unit, from: Pos, index: number): number {
-  const item = u.items[index];
-  const near = nearestEnemyDist(s, u, from);
-  if (item === 'tonico') {
-    const missing = u.maxHp - u.hp;
-    return missing >= 8 ? Math.min(TONICO_HEAL, missing) * 1.2 : 0;
+  if (act.kind === 'muralha') {
+    const h = holderOf(s);
+    const danger = h.team !== team && distToGoal(h, h.team) <= CHUTE_BASE + 4 ? 10 : -5;
+    return evaluate(s, team) + danger;
   }
-  if (item === 'oleo') return !u.oil && near <= 6 ? 3 : 0;
-  return !u.focus && near <= 5 ? 2.5 + (CLASSES[u.cls].stamina - u.stamina) * 0.3 : 0;
+  return evaluate(s, team);
 }
 
-function abilityScore(s: GameState, u: Unit, from: Pos, t: AbilityTarget): number {
-  const target = t.unitId ? getUnit(s, t.unitId) : null;
-  const atq = unitAtq(u) + (u.oil ? OLEO_ATQ : 0);
-  switch (t.ability) {
-    case 'avanco':
-      return estimateMelee(s, u, t.land!, target!, 1) + 3;
-    case 'investida':
-      return estimateMelee(s, u, from, target!, 1, 2) + 4;
-    case 'tiroCerteiro': {
-      const dmg = rawDamage(atq, 2.0, effectiveArmor(s, target!));
-      return dmg * 1.1 + (dmg >= target!.hp ? 12 + unitValue(target!) : 0);
-    }
-    case 'provocar': {
-      const n = aliveUnits(s, otherTeam(u.team)).filter((e) => manhattan(from, e) <= 2).length;
-      return u.hp > u.maxHp * 0.5 ? n * 3 : 0;
-    }
-    case 'atropelar': {
-      const tgt = target!;
-      const dir = dirFromTo(from, tgt);
-      const nx = tgt.x + DIRS[dir].x;
-      const ny = tgt.y + DIRS[dir].y;
-      const blocked = !inBounds(s, nx, ny) || !Number.isFinite(moveCost(s, tgt, nx, ny)) || !!unitAt(s, nx, ny) || !!baseAt(s, nx, ny);
-      const dmg = rawDamage(atq, 1.0, effectiveArmor(s, tgt)) + (blocked ? RAM_BONUS : 0);
-      return dmg + (dmg >= tgt.hp ? 12 + unitValue(tgt) : 0);
-    }
-    case 'perfurante': {
-      const dmg = rawDamage(atq, 1.5, effectiveArmor(s, target!));
-      return dmg * 1.4;
-    }
-    case 'mina': {
-      // Minas valem onde o inimigo vai passar; contra Blindado, muito mais.
-      let sc = 0;
-      for (const e of aliveUnits(s, otherTeam(u.team))) {
-        const d = manhattan(e, t);
-        const reach = CLASSES[e.cls].mov + 2;
-        if (d > reach || d === 0) continue;
-        const w = CLASSES[e.cls].vehicle ? 7 : 1.2;
-        sc += w * (1 - d / (reach + 1));
-      }
-      const ownBase = s.bases[u.team];
-      if (manhattan(t, ownBase) <= 4) sc += 1;
-      if (terrainAt(s, t.x, t.y) === 'ponte') sc += 1.5;
-      if (s.mines.some((m) => m.team === u.team && manhattan(m, t) <= 1)) sc -= 2;
-      return sc;
-    }
-    case 'reparo': {
-      const base = s.bases[u.team];
-      if (base.x === t.x && base.y === t.y) return Math.min(REPAIR_AMOUNT, base.maxHp - base.hp) * 1.5;
-      if (target) return Math.min(REPAIR_AMOUNT, target.maxHp - target.hp) * 1.2;
-      return 0.5;
-    }
-    case 'curaArea': {
-      let total = 0;
-      for (const v of aliveUnits(s, u.team)) if (manhattan(from, v) <= 2) total += Math.min(AREA_HEAL, v.maxHp - v.hp);
-      return total * 1.1;
-    }
-    case 'furtar':
-      return 4;
-    case 'fumaca':
-    case 'barricada':
-      return 0;
+function actionsFor(s: GameState): PlannedAction[] {
+  const out: PlannedAction[] = [];
+  for (const t of currentTargets(s)) {
+    if (t.kind === 'passe') out.push({ kind: 'passe', toId: t.toId, alto: t.alto });
+    else if (t.kind === 'chute') out.push({ kind: 'chute', bomba: t.bomba });
+    else if (t.kind === 'drible') {
+      out.push({ kind: 'drible', targetId: t.targetId });
+      if (canUseSpecial(s) === 'pedalada') out.push({ kind: 'pedalada-drible', targetId: t.targetId });
+    } else if (t.kind === 'desarme') out.push({ kind: 'desarme', targetId: t.targetId });
+    else if (t.kind === 'carrinho') out.push({ kind: 'carrinho', targetId: t.targetId });
   }
+  if (canUseSpecial(s) === 'muralha') out.push({ kind: 'muralha' });
+  return out;
 }
 
-function positionScore(s: GameState, u: Unit, c: Pos, threat: ThreatMap): number {
-  const def = CLASSES[u.cls];
-  const enemies = aliveUnits(s, otherTeam(u.team));
-  const enemyBase = s.bases[otherTeam(u.team)];
-  const ownBase = s.bases[u.team];
-  let score = 0;
-
-  const dEnemy = enemies.length ? Math.min(...enemies.map((e) => manhattan(c, e))) : 99;
-  const dBase = manhattan(c, enemyBase);
-  if (def.heal) {
-    const allies = aliveUnits(s, u.team).filter((a) => a.id !== u.id);
-    const dAlly = allies.length ? Math.min(...allies.map((a) => manhattan(c, a))) : 0;
-    score -= Math.abs(dAlly - 2) * 0.6;
-  } else if (def.ranged && !def.melee) {
-    const ideal = def.ranged.kind === 'morteiro' ? 5 : def.ranged.kind === 'canhao' ? 6 : def.ranged.max - 1;
-    score -= Math.abs(Math.min(dEnemy, dBase) - ideal) * 0.6;
-  } else {
-    // Quanto menos cautela, mais vontade de avançar.
-    score -= Math.min(dEnemy, dBase * 0.85) * AI_WEIGHTS.advance * (2 - caution(s));
-  }
-  if (AI_WEIGHTS.cohesion) {
-    const allies = aliveUnits(s, u.team).filter((a) => a.id !== u.id);
-    if (allies.length) {
-      const dAlly = Math.min(...allies.map((a) => manhattan(c, a)));
-      score -= Math.max(0, dAlly - 2) * AI_WEIGHTS.cohesion;
+/** Melhor jogada de um jogador (andar + ação), simulando cada casa alcançável. */
+function planFor(s: GameState, id: string, diff: Difficulty): Plan {
+  const team = getPlayer(s, id).team;
+  let best: Plan = { playerId: id, sprint: false, move: null, action: null, score: -Infinity };
+  for (const sp of [false, true]) {
+    const base = clone(s);
+    beginActivation(base, id);
+    if (sp) {
+      if (!canSprint(base)) continue;
+      sprint(base);
     }
-  }
-
-  // Defender a própria Base se houver inimigo perto dela.
-  const raider = enemies.find((e) => manhattan(e, ownBase) <= 5);
-  if (raider && def.melee) score -= manhattan(c, raider) * 0.5;
-
-  const armor = CLASSES[u.cls].armadura + TERRAIN[terrainAt(s, c.x, c.y)].armorBonus;
-  const fragility = 1 + (1 - u.hp / u.maxHp);
-  const danger = threatAt(s, threat, c, armor);
-  const careful = caution(s);
-  score -= danger * AI_WEIGHTS.threat * fragility * careful;
-  // Risco de morrer na próxima fase pesa muito mais.
-  if (danger >= u.hp) score -= AI_WEIGHTS.deathRisk * careful;
-  score -= strikeDanger(s, c, armor) * 1.2;
-  if (TERRAIN[terrainAt(s, c.x, c.y)].cover) score += 0.8;
-  if (terrainAt(s, c.x, c.y) === 'colina' && def.ranged) score += 0.6;
-  // Encostar na Base inimiga custa a torreta.
-  if (manhattan(c, enemyBase) === 1) score -= 3;
-  return score;
-}
-
-function pickColor(u: Unit): Exclude<NodeColor, 'prisma'> {
-  if (u.hp < u.maxHp * 0.6) return 'verde';
-  return u.items.includes('oleo') ? 'roxo' : 'laranja';
-}
-
-export function planActivation(s: GameState, team: Team, difficulty: Difficulty): Plan | null {
-  const prof = PROFILES[difficulty];
-  const threat = buildThreatMap(s, team);
-  let best: Plan | null = null;
-  const consider = (plan: Omit<Plan, 'score'>, score: number) => {
-    const total = score + (nextRandom(s) - 0.5) * prof.noise;
-    if (!best || total > best.score) best = { ...plan, score: total };
-  };
-  for (const u of aliveUnits(s, team).filter((v) => !v.activated)) {
-    const mp = baseMovement(s, u);
-    const canRunNow = u.stamina >= RUN_COST + 2;
-    const reach = reachable(s, u, mp + (canRunNow ? RUN_BONUS : 0));
-    const abilityReady = !abilityBlock(s, u) && abilityOf(u).id !== 'fumaca' && abilityOf(u).id !== 'barricada';
-    for (const [k, node] of reach) {
-      const c = fromKey(s, k);
-      if (!canStop(s, u, c.x, c.y)) continue;
-      const needsRun = node.cost > mp;
-      const moved = c.x !== u.x || c.y !== u.y;
-      const base = { unitId: u.id, run: needsRun, moveTo: moved ? c : null };
-      const pos = positionScore(s, u, c, threat) - (needsRun ? 1.5 : 0);
-      consider({ ...base, action: null }, pos);
-
-      for (const t of targetsFrom(s, u, c, { moved })) {
-        if (t.kind === 'area') {
-          const near = s.units.some((v) => v.alive && manhattan(v, t) <= 1) || manhattan(s.bases[otherTeam(team)], t) <= 1;
-          if (!near) continue;
-        }
-        const act = actionScore(s, u, c, t);
-        if (act <= 0) continue;
-        consider({ ...base, action: t, color: t.kind === 'coleta' && t.color === 'prisma' ? pickColor(u) : undefined }, act + pos);
-      }
-      u.items.forEach((_, i) => {
-        const sc = itemScore(s, u, c, i);
-        if (sc > 0) consider({ ...base, action: { kind: 'item', index: i } }, sc + pos);
-      });
-      if (abilityReady) {
-        for (const t of abilityTargets(s, u, c, moved)) {
-          const sc = abilityScore(s, u, c, t);
-          if (sc > 0) consider({ ...base, action: { kind: 'habilidade', x: t.x, y: t.y } }, sc + pos);
-        }
+    const cells: (Pos | null)[] = [null, ...destinations(base)];
+    for (const c of cells) {
+      if (sp && !c) continue;
+      const t = clone(base);
+      if (c) moveTo(t, c.x, c.y);
+      const stay = evaluate(t, team) - (sp ? 1.5 : 0);
+      const noise = () => (diff === 'recruta' ? nextRandom(s) * 6 : nextRandom(s) * 0.5);
+      if (stay + noise() > best.score) best = { playerId: id, sprint: sp, move: c, action: null, score: stay };
+      for (const act of actionsFor(t)) {
+        const v = actionValue(t, team, act) - (sp ? 1.5 : 0) + noise();
+        if (v > best.score) best = { playerId: id, sprint: sp, move: c, action: act, score: v };
       }
     }
   }
   return best;
 }
 
-// ---------- Confronto ----------
-
-const BEATS: Record<Lance, Lance> = { golpe: 'guarda', guarda: 'finta', finta: 'golpe', esperar: 'finta' };
-
-/** Lances que o lado ainda consegue pagar. */
-function effectiveLances(s: GameState, cs: ConfrontoState, k: SideKey): number {
-  const u = sideUnit(s, cs, k);
-  return Math.min(cs[k].lancesLeft, Math.floor(u.stamina / LANCE_COST[CLASSES[u.cls].weight]));
+/** Próximo jogador da IA a agir e o que fazer (o mais valioso primeiro). */
+export function planActivation(s: GameState, diff: Difficulty = 'veterano'): Plan | null {
+  const ids = activatable(s).map((p) => p.id);
+  if (!ids.length) return null;
+  // Quem está com a bola age por último, depois que os colegas se mexeram (exceto se puder chutar).
+  const h = holderOf(s);
+  let best: Plan | null = null;
+  for (const id of ids) {
+    const p = planFor(s, id, diff);
+    const bonus = id === h.id && ids.length > 1 && p.action?.kind !== 'chute' ? -2 : 0;
+    if (!best || p.score + bonus > best.score) best = { ...p, score: p.score + bonus };
+  }
+  return best;
 }
 
-export function chooseLance(
-  s: GameState,
-  cs: ConfrontoState,
-  k: SideKey,
-  seen: Lance | null,
-  difficulty: Difficulty,
-  memory: LanceMemory | null,
-): Lance {
-  const prof = PROFILES[difficulty];
-  if (!canSpend(s, cs, k)) return 'esperar';
-  const opp: SideKey = k === 'atk' ? 'def' : 'atk';
+/** Executa uma jogada planejada. Devolve o Duelo aberto (se houver) para quem chamou resolver. */
+export function executePlan(s: GameState, plan: Plan): { duel: DuelState | null; shot: boolean } {
+  beginActivation(s, plan.playerId);
+  if (plan.sprint && canSprint(s)) sprint(s);
+  if (plan.move) moveTo(s, plan.move.x, plan.move.y);
+  const act = plan.action;
+  if (!act) return { duel: null, shot: false };
+  switch (act.kind) {
+    case 'passe':
+      return { duel: pass(s, act.toId, act.alto).duel ?? null, shot: false };
+    case 'chute':
+      return { duel: null, shot: true };
+    case 'drible':
+      return { duel: startDribble(s, act.targetId), shot: false };
+    case 'pedalada-drible':
+      useSpecial(s);
+      return { duel: startDribble(s, act.targetId), shot: false };
+    case 'desarme':
+      return { duel: startTackle(s, act.targetId), shot: false };
+    case 'carrinho':
+      return { duel: startTackle(s, act.targetId, true), shot: false };
+    case 'muralha':
+      useSpecial(s);
+      return { duel: null, shot: false };
+  }
+}
 
-  if (seen) {
-    if (nextRandom(s) >= prof.blunder) {
-      const answer = BEATS[seen];
-      // Contra Golpe, Esperar também bloqueia e economiza o lance.
-      if (seen === 'golpe' && effectiveLances(s, cs, k) < 4 - cs.tempo) return 'esperar';
-      return answer;
+/** Partida inteira de IA contra IA (testes e balanceamento). */
+export function simulateGame(seed: number, diff: Difficulty = 'veterano'): GameState {
+  const s = createGame({ seed });
+  const mem = newMemory();
+  let guard = 0;
+  while (!s.over && guard++ < 2000) {
+    if (s.pendingDirect) {
+      takeDirectKick(s, chooseCorner(s, shotPreview(s, getPlayer(s, s.pendingDirect), false, true)), chooseDive(s));
+      continue;
     }
-  }
-
-  const me = sideUnit(s, cs, k);
-  const them = sideUnit(s, cs, opp);
-  const temposLeft = 4 - cs.tempo;
-  const myL = effectiveLances(s, cs, k);
-  const oppL = effectiveLances(s, cs, opp);
-  const pOppSpend = Math.min(1, oppL / temposLeft);
-
-  const prior: LanceMemory = { golpe: 1, guarda: 1, finta: 1 };
-  if (prof.learns && memory) {
-    prior.golpe += memory.golpe;
-    prior.guarda += memory.guarda;
-    prior.finta += memory.finta;
-  }
-  const total = prior.golpe + prior.guarda + prior.finta;
-  const dist: [Lance, number][] = [
-    ['golpe', (prior.golpe / total) * pOppSpend],
-    ['guarda', (prior.guarda / total) * pOppSpend],
-    ['finta', (prior.finta / total) * pOppSpend],
-    ['esperar', 1 - pOppSpend],
-  ];
-
-  const wMe = CLASSES[me.cls].weight;
-  const wThem = CLASSES[them.cls].weight;
-  const ev = (mine: Lance): number => {
-    let v = 0;
-    for (const [o, p] of dist) {
-      if (p <= 0) continue;
-      const c = clash(mine, o, wMe, wThem);
-      const dealt = c.aHit ? confrontoHit(s, cs, me, them, c.aHit) : 0;
-      const taken = c.bHit ? confrontoHit(s, cs, them, me, c.bHit) : 0;
-      v += p * (dealt - taken * 0.9);
+    const plan = planActivation(s, diff);
+    if (!plan) {
+      endPhase(s);
+      continue;
     }
-    return v;
-  };
-
-  const lances: Lance[] = ['golpe', 'guarda', 'finta'];
-  const evs = lances.map(ev);
-  const evWait = ev('esperar');
-  const bestEv = Math.max(...evs);
-
-  let spend = myL >= temposLeft;
-  if (!spend) {
-    const p = Math.max(0.1, Math.min(0.95, myL / temposLeft + (bestEv - evWait) / 12));
-    spend = nextRandom(s) < p;
-  }
-  if (!spend) return 'esperar';
-
-  // Softmax sobre o valor esperado.
-  const weights = evs.map((v) => Math.exp((v - bestEv) / prof.temperature));
-  const sum = weights.reduce((a, b) => a + b, 0);
-  let r = nextRandom(s) * sum;
-  for (let i = 0; i < lances.length; i++) {
-    r -= weights[i];
-    if (r <= 0) return lances[i];
-  }
-  return lances[lances.length - 1];
-}
-
-/** A IA quer gastar uma Leitura neste tempo? */
-export function wantsRead(s: GameState, cs: ConfrontoState, k: SideKey): boolean {
-  return cs[k].readsLeft > 0 && canSpend(s, cs, k);
-}
-
-export type LanceChooser = (cs: ConfrontoState, k: SideKey, seen: Lance | null) => Lance;
-
-/**
- * Resolve um tempo com dois "escolhedores", respeitando Exposição e Leituras:
- * quem está Exposto (ou foi lido) escolhe primeiro e o outro vê.
- */
-export function playTempo(s: GameState, cs: ConfrontoState, choose: Record<SideKey, LanceChooser>): void {
-  let first: SideKey | null = cs.exposed;
-  if (!first) {
-    const atkReads = wantsRead(s, cs, 'atk');
-    const defReads = wantsRead(s, cs, 'def');
-    if (atkReads && !defReads && useRead(cs, 'atk')) first = 'def';
-    else if (defReads && !atkReads && useRead(cs, 'def')) first = 'atk';
-  }
-  let atk: Lance;
-  let def: Lance;
-  if (first === 'atk') {
-    atk = choose.atk(cs, 'atk', null);
-    def = choose.def(cs, 'def', atk);
-  } else if (first === 'def') {
-    def = choose.def(cs, 'def', null);
-    atk = choose.atk(cs, 'atk', def);
-  } else {
-    atk = choose.atk(cs, 'atk', null);
-    def = choose.def(cs, 'def', null);
-  }
-  resolveTempo(s, cs, atk, def);
-}
-
-export function aiChooser(s: GameState, difficulty: Difficulty, memory: LanceMemory | null): LanceChooser {
-  return (cs, k, seen) => chooseLance(s, cs, k, seen, difficulty, memory);
-}
-// ---------- Execução ----------
-
-export interface HeadlessOptions {
-  difficulty: Record<Team, Difficulty>;
-}
-
-/** Joga uma ativação inteira da IA do time ativo, resolvendo Confrontos com IA dos dois lados. */
-export function playAiActivation(s: GameState, opts: HeadlessOptions): void {
-  const team = s.activeTeam;
-  const plan = planActivation(s, team, opts.difficulty[team]);
-  if (!plan) throw new Error('IA sem jogada possível');
-  executePlan(s, plan, (cs) => {
-    const atkTeam = sideUnit(s, cs, 'atk').team;
-    const choosers: Record<SideKey, LanceChooser> = {
-      atk: aiChooser(s, opts.difficulty[atkTeam], null),
-      def: aiChooser(s, opts.difficulty[otherTeam(atkTeam)], null),
-    };
-    while (!cs.done) playTempo(s, cs, choosers);
-    finishConfronto(s, cs);
-  });
-}
-
-/** A ação planejada ainda é válida (uma mina pode ter interrompido o movimento)? */
-export function actionStillValid(s: GameState, action: PlannedAction): boolean {
-  if (!action || !s.activation) return false;
-  if (action.kind === 'item') return canUseItem(s, action.index);
-  if (action.kind === 'habilidade') return currentAbilityTargets(s).some((t) => t.x === action.x && t.y === action.y);
-  return currentTargets(s).some((t) => t.kind === action.kind && t.x === action.x && t.y === action.y);
-}
-
-/** Executa só a ação (a parte que não abre Confronto é imediata). Devolve o Confronto, se houver. */
-export function performAction(s: GameState, plan: Plan): ConfrontoState | null {
-  const t = plan.action;
-  if (!t || !actionStillValid(s, t)) return null;
-  switch (t.kind) {
-    case 'melee':
-      return attackMelee(s, t.unitId);
-    case 'meleeBase':
-      attackBaseMelee(s);
-      return null;
-    case 'tiro':
-      attackRanged(s, t.unitId);
-      return null;
-    case 'tiroBase':
-      attackRangedBase(s);
-      return null;
-    case 'barricada':
-      attackBarricade(s, t.x, t.y);
-      return null;
-    case 'area':
-      attackArea(s, t.x, t.y);
-      return null;
-    case 'cura':
-      heal(s, t.unitId);
-      return null;
-    case 'coleta':
-      collect(s, t.x, t.y, plan.color);
-      return null;
-    case 'item':
-      useItem(s, t.index);
-      return null;
-    case 'habilidade':
-      return useAbility(s, t.x, t.y);
-  }
-}
-
-/** Executa um plano; `onConfronto` resolve o Confronto (com tela ou sem). */
-export function executePlan(s: GameState, plan: Plan, onConfronto: (cs: ConfrontoState) => void): void {
-  beginActivation(s, plan.unitId);
-  if (plan.run) run(s);
-  if (plan.moveTo) moveTo(s, plan.moveTo.x, plan.moveTo.y);
-  if (s.winner) return;
-  const cs = getUnit(s, plan.unitId).alive ? performAction(s, plan) : null;
-  if (cs) onConfronto(cs);
-  if (s.winner || !s.activation) return;
-  endActivation(s);
-}
-
-/** Partida inteira IA × IA. Devolve o estado final. */
-export function simulateGame(s: GameState, opts: HeadlessOptions, maxSteps = 5000): GameState {
-  let steps = 0;
-  while (!s.winner) {
-    if (++steps > maxSteps) throw new Error('Simulação não terminou');
-    playAiActivation(s, opts);
+    const r = executePlan(s, plan);
+    if (r.duel) {
+      autoDuel(s, r.duel, mem, diff);
+      applyDuel(s, r.duel);
+      if (s.pendingDirect) continue;
+    }
+    if (r.shot) {
+      const p = getPlayer(s, plan.playerId);
+      const pv = shotPreview(s, p, plan.action?.kind === 'chute' && plan.action.bomba);
+      shoot(s, chooseCorner(s, pv), chooseDive(s), plan.action?.kind === 'chute' && plan.action.bomba);
+    }
+    if (s.activation) {
+      // Depois de um drible vencido, ainda pode passar ou chutar.
+      if (s.activation.bonus) {
+        const follow = bonusAction(s, diff);
+        if (follow?.kind === 'passe') {
+          const out = pass(s, follow.toId, follow.alto);
+          if (out.duel) {
+            autoDuel(s, out.duel, mem, diff);
+            applyDuel(s, out.duel);
+          }
+        } else if (follow?.kind === 'chute') {
+          const p = getPlayer(s, s.activation.playerId);
+          shoot(s, chooseCorner(s, shotPreview(s, p, follow.bomba)), chooseDive(s), follow.bomba);
+        }
+      }
+      if (s.activation) endActivation(s);
+    }
   }
   return s;
+}
+
+/** Depois de um drible vencido: passar, chutar ou segurar. */
+export function bonusAction(s: GameState, diff: Difficulty = 'veterano'): PlannedAction | null {
+  const team = getPlayer(s, s.activation!.playerId).team;
+  let best: { a: PlannedAction | null; v: number } = { a: null, v: evaluate(s, team) };
+  for (const act of actionsFor(s)) {
+    if (act.kind !== 'passe' && act.kind !== 'chute') continue;
+    const v = actionValue(s, team, act) + (diff === 'recruta' ? nextRandom(s) * 5 : 0);
+    if (v > best.v) best = { a: act, v };
+  }
+  return best.a;
 }
