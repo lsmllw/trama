@@ -4,6 +4,7 @@ import { createGame, ROLES, WEIGHT_LABEL } from '../core';
 import type { Difficulty, Player, Role } from '../core';
 import { clear, h } from './dom';
 import type { MatchConfig } from './game-view';
+import { roleBadge } from './roles';
 import { portraitUrl } from './sprites';
 
 const ROLE_LIST: Role[] = ['goleiro', 'fixo', 'ala', 'pivo'];
@@ -14,7 +15,7 @@ function playerRow(p: Player): HTMLElement {
     'div',
     { class: `roster-row ${p.team}` },
     h('img', { src: portraitUrl(p, 3), alt: p.name }),
-    h('div', {}, h('b', {}, `#${p.number} ${p.name}`), h('div', { class: 'sub' }, `${d.name} · ${d.special}`)),
+    h('div', {}, h('b', {}, `#${p.number} ${p.name}`), h('div', { class: 'sub' }, roleBadge(p.role), `${d.name} · ${d.special}`)),
   );
 }
 
@@ -45,7 +46,7 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
         'div',
         { class: 'role-card' },
         h('img', { src: portraitUrl(sample, 3), alt: d.name }),
-        h('div', { class: 'name' }, d.name, h('span', { class: 'sub' }, ` · ${WEIGHT_LABEL[d.weight]}`)),
+        h('div', { class: 'name' }, roleBadge(r), d.name, h('span', { class: 'sub' }, ` · ${WEIGHT_LABEL[d.weight]}`)),
         h('div', { class: 'meta' }, d.blurb),
         h(
           'div',

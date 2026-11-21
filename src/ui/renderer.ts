@@ -3,6 +3,7 @@
 
 import { AREA_RADIUS, COURT_H, COURT_W, TEN_METER, getPlayer } from '../core';
 import type { Corner, Emote, GameEvent, GameState, Lance, Player, Pos, SideKey, Team, TempoResult } from '../core';
+import { drawRoleBadge } from './roles';
 import { BALL, playerSprite, whiteSprite } from './sprites';
 import type { Frame } from './sprites';
 
@@ -151,6 +152,7 @@ interface DuelFx {
 }
 
 const DUEL_ZOOM = 2.35;
+const FOCUS_ZOOM = 1.75;
 const LANCE_COLOR: Record<Lance, string> = { golpe: '#ff9a6a', guarda: '#8fc4ff', finta: '#d2a8ff', esperar: '#e0e0e6' };
 const ease = (p: number) => (p <= 0 ? 0 : p >= 1 ? 1 : p * p * (3 - 2 * p));
 
@@ -162,6 +164,15 @@ export class Renderer {
   cam = { z: 1, tx: 0, ty: 0 };
   private zTarget = 1;
   private pointerFrac: Pt | null = null;
+  private lastPointer: Pt | null = null;
+  // Mira: escolhendo a casa de destino, a câmera segue o mouse ou o cursor do teclado.
+  private aimOn = false;
+  /** Zoom de antes de selecionar um jogador (o zoom de foco é desfeito ao soltar). */
+  private raisedFrom: number | null = null;
+  private aimSrc: 'mouse' | 'key' | null = null;
+  private aimCell: Pos | null = null;
+  private aimFrac: Pt = { x: 0.5, y: 0.5 };
+  private aimStart: Pt | null = null;
   private follow: Pt = { x: 0.5, y: 0.5 };
   private lockId: string | null = null;
   private held: { tx: number; ty: number } | null = null;
@@ -1152,6 +1163,7 @@ export class Renderer {
   pointer(clientX: number | null, clientY = 0): void {
     if (clientX === null) {
       this.pointerFrac = null;
+      this.lastPointer = null;
       return;
     }
     const p = this.toCanvas(clientX, clientY);
@@ -1161,10 +1173,67 @@ export class Renderer {
       x: Math.min(1, Math.max(0, fx)),
       y: Math.min(1, Math.max(0, fy)),
     };
+    this.lastPointer = p;
+    if (this.aimOn) {
+      if (this.aimSrc !== 'mouse') {
+        // Um tremor do mouse não tira a câmera do jogador (ou da casa escolhida pelo teclado).
+        if (!this.aimStart) this.aimStart = p;
+        else if (Math.hypot(p.x - this.aimStart.x, p.y - this.aimStart.y) > 14) this.aimSrc = 'mouse';
+      }
+      if (this.aimSrc === 'mouse') this.aimFrac = { ...this.pointerFrac };
+    }
+  }
+
+  /** Liga/desliga a mira (escolha do destino, do passe ou do alvo): a câmera parte centrada no jogador. */
+  setAim(on: boolean): void {
+    if (on === this.aimOn) return;
+    this.aimOn = on;
+    this.aimSrc = null;
+    this.aimCell = null;
+    this.aimStart = this.lastPointer;
+  }
+
+  get aiming(): boolean {
+    return this.aimOn && !!this.lockId && !this.held;
+  }
+
+  /** Cursor do teclado na casa (x, y): a câmera desliza até centralizá-la. */
+  aimAt(x: number, y: number): void {
+    this.aimSrc = 'key';
+    this.aimCell = { x, y };
+    this.aimStart = this.lastPointer;
+  }
+
+  /** Ponto do mundo que a câmera deve centralizar durante a mira (null fora dela). */
+  private aimCenter(playerPt: Pt, z: number): Pt | null {
+    if (!this.aimOn || !this.aimSrc) return null;
+    let c: Pt;
+    if (this.aimSrc === 'key' && this.aimCell) {
+      c = this.P(this.aimCell.x + 0.5, this.aimCell.y + 0.5, 8);
+    } else {
+      // O mouse puxa a câmera para o lado em que está; perto do centro (zona morta) nada muda.
+      const dead = 0.14;
+      const shape = (f: number) => {
+        const d = f - 0.5;
+        return (Math.sign(d) * Math.max(0, Math.abs(d) - dead)) / (0.5 - dead);
+      };
+      const W = this.canvas.width;
+      const H = this.canvas.height;
+      c = { x: playerPt.x + shape(this.aimFrac.x) * 0.45 * (W / z), y: playerPt.y + shape(this.aimFrac.y) * 0.45 * (H / z) };
+    }
+    // Não deixa a câmera fugir da quadra.
+    const corners = [this.P(0, 0), this.P(COURT_W, 0), this.P(0, COURT_H), this.P(COURT_W, COURT_H)];
+    const xs = corners.map((q) => q.x);
+    const ys = corners.map((q) => q.y);
+    return {
+      x: Math.min(Math.max(...xs), Math.max(Math.min(...xs), c.x)),
+      y: Math.min(Math.max(...ys), Math.max(Math.min(...ys), c.y)),
+    };
   }
 
   zoomAt(clientX: number, clientY: number, factor: number): void {
     if (this.duelFx && !this.duelFx.end) return;
+    this.raisedFrom = null; // o zoom escolhido pelo jogador fica
     const zOld = this.zTarget;
     this.zTarget = Math.min(MAX_ZOOM, Math.max(1, this.zTarget * factor));
     if (this.held) {
@@ -1202,7 +1271,20 @@ export class Renderer {
         y: Math.min(1, Math.max(0, fy)),
       };
     }
+    if (!id && this.raisedFrom !== null) {
+      this.zTarget = this.raisedFrom;
+      this.raisedFrom = null;
+    }
     this.lockId = id;
+  }
+
+  /** Seleciona um jogador: a câmera trava nele e aproxima um pouco, para a mira ter para onde andar. */
+  focusOn(id: string): void {
+    this.lockOn(id);
+    if (this.zTarget < FOCUS_ZOOM - 0.2) {
+      if (this.raisedFrom === null) this.raisedFrom = this.zTarget;
+      this.zTarget = FOCUS_ZOOM;
+    }
   }
 
   get lockedOn(): string | null {
@@ -1214,6 +1296,7 @@ export class Renderer {
   }
 
   resetCamera(): void {
+    this.raisedFrom = null;
     this.lockId = null;
     this.held = null;
     this.zTarget = 1;
@@ -1244,6 +1327,7 @@ export class Renderer {
     const zNext = this.cam.z + (zGoal - this.cam.z) * (1 - Math.exp(-dt / (duel ? 55 : 90)));
     const locked = this.lockId ? this.disp.get(this.lockId) : undefined;
     let want: { tx: number; ty: number };
+    let aimed = false;
     if (duel) {
       // Zoom rápido no meio dos dois, um pouco acima dos pés.
       const a = this.d(duel.a);
@@ -1258,7 +1342,13 @@ export class Renderer {
       };
     } else if (locked) {
       const w = this.P(locked.x, locked.y, 20);
-      want = { tx: W / 2 - w.x * zNext, ty: H / 2 - w.y * zNext };
+      // Escolhendo para onde ir (ou o alvo), segue o mouse ou o cursor do teclado.
+      const c = this.busy ? null : this.aimCenter(w, zNext);
+      aimed = !!c;
+      want = { tx: W / 2 - (c ?? w).x * zNext, ty: H / 2 - (c ?? w).y * zNext };
+      // Sem mostrar o vazio fora do ginásio.
+      want.tx = Math.min(0, Math.max(W - W * zNext, want.tx));
+      want.ty = Math.min(0, Math.max(H - H * zNext, want.ty));
     } else {
       const k = 1 - Math.exp(-dt / 140);
       if (this.pointerFrac) {
@@ -1271,7 +1361,7 @@ export class Renderer {
         ty: (H - H * zNext) * this.follow.y + fade * (0.5 - this.follow.y) * PARALLAX.y,
       };
     }
-    const m = 1 - Math.exp(-dt / (duel ? 45 : locked ? 110 : 60));
+    const m = 1 - Math.exp(-dt / (duel ? 45 : aimed ? 170 : locked ? 110 : 60));
     this.cam = {
       z: zNext,
       tx: this.cam.tx + (want.tx - this.cam.tx) * m,
@@ -1675,19 +1765,28 @@ export class Renderer {
     // Nome (escondido no Duelo, que já mostra os dois no topo).
     if (this.duelActive) return;
     const top = g.y - sh - d.h - 6;
+    // Com zoom, o nome não cresce junto (fica com tamanho parecido na tela).
+    const k = Math.min(1, 1.3 / this.cam.z);
+    ctx.save();
+    ctx.translate(g.x, top);
+    ctx.scale(k, k);
+    ctx.translate(-g.x, -top);
     ctx.font = 'bold 9px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.fillStyle = 'rgba(10,10,18,0.55)';
     const label = `${p.number} ${p.name}`;
-    const tw = ctx.measureText(label).width + 6;
+    const tw = ctx.measureText(label).width + 17;
     ctx.fillRect(g.x - tw / 2, top - 11, tw, 11);
+    // Símbolo colorido da posição, antes do nome.
+    drawRoleBadge(ctx, p.role, g.x - tw / 2 + 6, top - 5.5, 3.6);
     ctx.fillStyle = p.team === 'azul' ? '#bcd6ff' : '#ffc2b8';
-    ctx.fillText(label, g.x, top - 1);
+    ctx.fillText(label, g.x + 5.5, top - 1);
     if (p.ready && s.activeTeam !== p.team) {
       ctx.fillStyle = '#ffe14d';
       ctx.fillText('!', g.x + tw / 2 + 4, top - 1);
     }
+    ctx.restore();
   }
 
   private drawGoal(team: Team, now: number, part: 'back' | 'front'): void {
@@ -1901,6 +2000,27 @@ export class Renderer {
       x: r.left + (p.x / this.canvas.width) * r.width,
       y: r.top + (p.y / this.canvas.height) * r.height,
     };
+  }
+
+  /** Jogador cujo desenho (corpo e cabeça) está sob o ponto da página; o da frente ganha. */
+  playerAtClient(clientX: number, clientY: number): string | null {
+    const c = this.toCanvas(clientX, clientY);
+    const sx = (c.x - this.cam.tx) / this.cam.z;
+    const sy = (c.y - this.cam.ty) / this.cam.z;
+    const halfW = 9 * SCALE * 0.8;
+    const tall = 26 * SCALE;
+    let best: string | null = null;
+    let bestDepth = -Infinity;
+    for (const [id, d] of this.disp) {
+      const g = this.P(d.x, d.y);
+      if (sx < g.x - halfW || sx > g.x + halfW || sy < g.y - d.h - tall || sy > g.y + 3) continue;
+      const depth = d.x * AY + d.y * BY;
+      if (depth > bestDepth) {
+        bestDepth = depth;
+        best = id;
+      }
+    }
+    return best;
   }
 
   cellAt(clientX: number, clientY: number): Pos | null {

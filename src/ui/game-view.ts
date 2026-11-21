@@ -50,7 +50,9 @@ import { runInlineDuel } from './duel-inline';
 import { emptyHighlights, Renderer } from './renderer';
 import type { Highlights, TargetMark } from './renderer';
 import { chooseShotCorner } from './shot-modal';
+import { roleBadge } from './roles';
 import { portraitUrl } from './sprites';
+import { hideTip, showPlayerTip } from './tooltip';
 
 export interface MatchConfig {
   difficulty: Difficulty;
@@ -79,6 +81,7 @@ export class GameView {
   private kbCursor = false;
   private ended = false;
   private inDuel = false;
+  private tipTimer = 0;
   private el = {
     top: h('div', { class: 'scoreboard' }),
     canvas: h('canvas', { class: 'board' }),
@@ -119,7 +122,8 @@ export class GameView {
     this.renderer = new Renderer(this.el.canvas, this.s);
     const c = this.el.canvas;
     c.addEventListener('click', (e) => {
-      const p = this.renderer.cellAt(e.clientX, e.clientY);
+      this.cancelTip();
+      const p = this.pick(e.clientX, e.clientY);
       if (p) void this.onCellClick(p);
     });
     c.addEventListener('mousemove', (e) => {
@@ -127,14 +131,16 @@ export class GameView {
       this.mouseAt = { x: e.clientX, y: e.clientY };
       this.hoverByMouse = true;
       this.kbCursor = false;
-      const p = this.renderer.cellAt(e.clientX, e.clientY);
+      const p = this.pick(e.clientX, e.clientY);
       if (!p || !this.hover || !same(p, this.hover)) {
         this.hover = p;
         this.refreshHighlights();
         this.renderHint();
       }
+      this.tipAtMouse(p, e.clientX, e.clientY);
     });
     c.addEventListener('mouseleave', () => {
+      this.cancelTip();
       this.renderer.pointer(null);
       this.mouseAt = null;
       this.hover = null;
@@ -159,9 +165,11 @@ export class GameView {
     const loop = (t: number) => {
       this.renderer.draw(this.s, this.hl, t);
       if (this.mouseAt && this.hoverByMouse && !this.kbCursor) {
-        const p = this.renderer.cellAt(this.mouseAt.x, this.mouseAt.y);
+        const p = this.pick(this.mouseAt.x, this.mouseAt.y);
         if (p && (!this.hover || !same(p, this.hover))) {
           this.hover = p;
+          // A câmera andou com o mouse parado: a janela de informações acompanha o que está embaixo dele.
+          this.tipAtMouse(p, this.mouseAt.x, this.mouseAt.y);
           this.refreshHighlights();
         }
       }
@@ -174,6 +182,7 @@ export class GameView {
   }
 
   destroy(): void {
+    this.cancelTip();
     cancelAnimationFrame(this.raf);
     document.removeEventListener('keydown', this.onKey);
     document.querySelectorAll('.modal-bg').forEach((m) => m.remove());
@@ -244,6 +253,64 @@ export class GameView {
     if (next && this.isPlayerTurn()) this.hover = { x: next.x, y: next.y };
   }
 
+  /**
+   * Casa sob o mouse. Os jogadores são altos: passar o mouse no corpo de um deles (que cobre a casa de trás)
+   * conta como estar na casa dele, a não ser que a casa de trás seja um destino ou alvo válido.
+   */
+  private pick(x: number, y: number): Pos | null {
+    const s = this.s;
+    const cell = this.renderer.cellAt(x, y);
+    if (cell && (playerAt(s, cell.x, cell.y) || this.hl.moves.some((m) => same(m, cell)) || this.hl.targets.some((t) => same(t, cell)))) return cell;
+    const id = this.renderer.playerAtClient(x, y);
+    if (id) {
+      const p = getPlayer(s, id);
+      return { x: p.x, y: p.y };
+    }
+    return cell;
+  }
+
+  // ---------- Janela de informações ----------
+
+  private cancelTip(): void {
+    clearTimeout(this.tipTimer);
+    hideTip();
+  }
+
+  /** O mouse parou num jogador: depois de um instante, abre a janela com as informações dele. */
+  private tipAtMouse(c: Pos | null, x: number, y: number): void {
+    const occ = c ? playerAt(this.s, c.x, c.y) : undefined;
+    clearTimeout(this.tipTimer);
+    if (!occ || this.inDuel || document.querySelector('.modal-bg')) {
+      hideTip();
+      return;
+    }
+    if (document.querySelector('.ptip.on')) {
+      showPlayerTip(this.s, occ, x, y);
+      return;
+    }
+    this.tipTimer = window.setTimeout(() => {
+      if (this.inDuel || !this.mouseAt) return;
+      const now = this.pick(this.mouseAt.x, this.mouseAt.y);
+      const p = now ? playerAt(this.s, now.x, now.y) : undefined;
+      if (p) showPlayerTip(this.s, p, this.mouseAt.x, this.mouseAt.y);
+    }, 260);
+  }
+
+  /** Cursor do teclado parou num jogador: a janela abre ao lado da casa. */
+  private tipAtCursor(x: number, y: number): void {
+    clearTimeout(this.tipTimer);
+    const occ = playerAt(this.s, x, y);
+    if (!occ) {
+      hideTip();
+      return;
+    }
+    this.tipTimer = window.setTimeout(() => {
+      if (this.inDuel || !this.hover || !same(this.hover, { x, y })) return;
+      const pt = this.renderer.clientPoint(x, y);
+      showPlayerTip(this.s, occ, pt.x + 10, pt.y - 40);
+    }, 420);
+  }
+
   /** O jogador em ação é o último livre do seu time e, depois de andar, não tem passe, chute, drible, desarme nem Muralha. */
   private lastWithNothingLeft(): boolean {
     const s = this.s;
@@ -263,6 +330,7 @@ export class GameView {
     await this.renderer.idle();
     const atk = sidePlayer(this.s, cs, 'atk');
     this.inDuel = true;
+    this.cancelTip();
     this.hl = emptyHighlights();
     this.el.hint.textContent = 'Duelo! 1–4 ou ↑↓ + Espaço escolhem o lance · L usa uma Leitura';
     try {
@@ -451,7 +519,8 @@ export class GameView {
       this.mode = 'normal';
     }
     this.selectedId = id;
-    this.renderer.lockOn(id);
+    if (p.team === PLAYER && this.isPlayerTurn()) this.renderer.focusOn(id);
+    else this.renderer.lockOn(id);
     this.hover = { x: p.x, y: p.y };
     this.hoverByMouse = false;
     this.flush();
@@ -496,7 +565,10 @@ export class GameView {
     this.hover = { x, y };
     this.hoverByMouse = false;
     this.kbCursor = true;
-    this.renderer.ensureVisible(x, y);
+    // Escolhendo o destino (ou o alvo), a câmera desliza até a casa do cursor.
+    if (this.renderer.aiming) this.renderer.aimAt(x, y);
+    else this.renderer.ensureVisible(x, y);
+    this.tipAtCursor(x, y);
     this.refreshHighlights();
     this.renderHint();
   }
@@ -606,6 +678,7 @@ export class GameView {
       }
     }
     this.hl = hl;
+    this.renderer.setAim((hl.moves.length > 0 || hl.targets.length > 0) && !!s.activation && this.renderer.lockedOn === s.activation.playerId);
   }
 
   private async onCellClick(c: Pos): Promise<void> {
@@ -830,13 +903,24 @@ export class GameView {
       {
         class: `pcard ${p.team}${isActive ? ' active' : ''}${p.activated && s.activeTeam === p.team ? ' done' : ''}${this.selectedId === p.id ? ' sel' : ''}`,
         onclick: () => (p.team === PLAYER ? this.selectOwn(p.id) : ((this.selectedId = p.id), this.renderPanels())),
-        title: `${def.name}: ${def.blurb}\nEspecial: ${def.special} — ${def.specialText}`,
+        onmouseenter: (e: MouseEvent) => {
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          showPlayerTip(this.s, p, r.left, r.top, 'left');
+        },
+        onmouseleave: () => hideTip(),
       },
       h('img', { src: portraitUrl(p, 2), alt: p.name }),
       h(
         'div',
         { class: 'pinfo' },
-        h('div', { class: 'pname' }, index ? h('kbd', {}, String(index)) : null, `#${p.number} ${p.name}`, h('span', { class: 'tags' }, tags.join(' '))),
+        h(
+          'div',
+          { class: 'pname' },
+          index ? h('kbd', {}, String(index)) : null,
+          roleBadge(p.role),
+          `#${p.number} ${p.name}`,
+          h('span', { class: 'tags' }, tags.join(' ')),
+        ),
         h('div', { class: 'prole' }, `${def.name} · ${p.specialUsed ? `${def.special} usado` : def.special}`),
         h('div', { class: 'bars' }, bar(p.fol, def.fol, 'fol'), bar(p.hab, def.hab, 'hab')),
       ),
@@ -909,7 +993,7 @@ export class GameView {
         'div',
         { class: 'ac-head' },
         h('img', { src: portraitUrl(p, 3) }),
-        h('div', {}, h('b', {}, `#${p.number} ${p.name}`), h('div', { class: 'sub' }, `${def.name} · ${def.blurb}`)),
+        h('div', {}, h('b', {}, roleBadge(p.role), `#${p.number} ${p.name}`), h('div', { class: 'sub' }, `${def.name} · ${def.blurb}`)),
       ),
       h(
         'div',
