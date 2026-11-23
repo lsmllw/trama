@@ -3,11 +3,23 @@
 import { ROLES, TEAM_NAME, WEIGHT_LABEL } from '../core';
 import type { GameState, Player } from '../core';
 import { clear, h } from './dom';
+import { radarChart } from './radar';
 import { ROLE_BADGE, roleBadge } from './roles';
 import { portraitUrl } from './sprites';
 
 let el: HTMLElement | null = null;
 let shownId: string | null = null;
+
+export interface TipOptions {
+  /** 'left' abre à esquerda do ponto (cartões do painel lateral). */
+  side?: 'auto' | 'left';
+  /** Jogador em ação: o contorno dele aparece tracejado no radar, para comparar. */
+  compare?: Player;
+  /** Tela inicial: sem a situação na partida. */
+  preview?: boolean;
+}
+
+const TEAM_STROKE = { azul: '#8fb8ff', vermelho: '#ff9a8c' } as const;
 
 function tipEl(): HTMLElement {
   if (!el) {
@@ -17,7 +29,7 @@ function tipEl(): HTMLElement {
   return el;
 }
 
-function content(s: GameState, p: Player): HTMLDivElement[] {
+function content(s: GameState, p: Player, opts: TipOptions): HTMLDivElement[] {
   const d = ROLES[p.role];
   const badge = ROLE_BADGE[p.role];
   const stat = (k: string, v: number, tip: string) => h('span', { title: tip }, h('i', {}, k), String(v));
@@ -30,15 +42,18 @@ function content(s: GameState, p: Player): HTMLDivElement[] {
       h('b', {}, `${v}/${max}`),
     );
   const status: [string, string][] = [];
-  if (s.holder === p.id) status.push(['⚽', 'Com a bola']);
-  if (s.keeperMustPass === p.id) status.push(['⏱', 'Regra dos 4 segundos: precisa soltar a bola nesta fase']);
-  if (p.unbalanced) status.push(['💫', 'Desequilibrado: não marca nem corta passes até a fase dele']);
-  if (p.ready && s.activeTeam !== p.team) status.push(['❗', 'Prontidão: +1 lance se for defender um Duelo']);
-  if (p.muralha) status.push(['🧱', 'Muralha ativa: reflexo +2']);
-  if (p.pedalada) status.push(['🌀', 'Pedalada pronta: +1 Leitura e fintas sem HAB no próximo Duelo']);
-  if (s.activeTeam === p.team && p.activated && !s.over) status.push(['✓', 'Já jogou nesta fase']);
-  if (p.goals) status.push(['🥅', `${p.goals} gol${p.goals > 1 ? 's' : ''} na partida`]);
-  return [
+  if (!opts.preview) {
+    if (s.holder === p.id) status.push(['⚽', 'Com a bola']);
+    if (s.keeperMustPass === p.id) status.push(['⏱', 'Regra dos 4 segundos: precisa soltar a bola nesta fase']);
+    if (p.unbalanced) status.push(['💫', 'Desequilibrado: não marca nem corta passes até a fase dele']);
+    if (p.ready && s.activeTeam !== p.team) status.push(['❗', 'Prontidão: +1 lance se for defender um Duelo']);
+    if (p.muralha) status.push(['🧱', 'Muralha ativa: reflexo +2']);
+    if (p.pedalada) status.push(['🌀', 'Pedalada pronta: +1 Leitura e fintas sem HAB no próximo Duelo']);
+    if (s.activeTeam === p.team && p.activated && !s.over) status.push(['✓', 'Já jogou nesta fase']);
+    if (p.goals) status.push(['🥅', `${p.goals} gol${p.goals > 1 ? 's' : ''} na partida`]);
+  }
+  const cmp = opts.compare && opts.compare.id !== p.id ? opts.compare : undefined;
+  const left = [
     h(
       'div',
       { class: 'tt-head' },
@@ -86,18 +101,38 @@ function content(s: GameState, p: Player): HTMLDivElement[] {
         )
       : null,
   ].filter((x): x is HTMLDivElement => !!x);
+  // Radar ao lado das informações (escala 0–7; REF só o goleiro tem).
+  const right = h(
+    'div',
+    { class: 'tt-radar' },
+    h('div', { class: 'tt-radar-title' }, 'Atributos'),
+    radarChart(p, TEAM_STROKE[p.team], cmp ? { player: cmp, color: TEAM_STROKE[cmp.team] } : undefined),
+    cmp
+      ? h(
+          'div',
+          { class: 'tt-legend' },
+          h('i', { class: 'solid', style: `--c:${TEAM_STROKE[p.team]}` }),
+          p.name,
+          h('i', { class: 'dash', style: `--c:${TEAM_STROKE[cmp.team]}` }),
+          `${cmp.name} (em ação)`,
+        )
+      : null,
+  );
+  return [h('div', { class: 'tt-cols' }, h('div', { class: 'tt-info' }, left), right)];
 }
 
 /** Mostra (ou atualiza) a janela perto do ponto (x, y) da página. */
-export function showPlayerTip(s: GameState, p: Player, x: number, y: number, side: 'auto' | 'left' = 'auto'): void {
+export function showPlayerTip(s: GameState, p: Player, x: number, y: number, opts: TipOptions = {}): void {
+  const side = opts.side ?? 'auto';
+  const key = `${p.id}|${opts.compare?.id ?? ''}`;
   const t = tipEl();
-  if (shownId !== p.id || !t.classList.contains('on')) {
+  if (shownId !== key || !t.classList.contains('on')) {
     clear(t);
-    t.append(...content(s, p));
+    t.append(...content(s, p, opts));
     t.classList.remove('on');
     void t.offsetWidth; // reinicia a animação de entrada
     t.classList.add('on');
-    shownId = p.id;
+    shownId = key;
   }
   const w = t.offsetWidth;
   const hgt = t.offsetHeight;

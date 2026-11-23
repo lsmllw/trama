@@ -271,6 +271,12 @@ export class GameView {
 
   // ---------- Janela de informações ----------
 
+  /** Jogador seu em ação (para comparar no radar de quem está sob o mouse). */
+  private tipCompare(): Player | undefined {
+    const a = this.s.activation;
+    return a && this.isPlayerTurn() ? getPlayer(this.s, a.playerId) : undefined;
+  }
+
   private cancelTip(): void {
     clearTimeout(this.tipTimer);
     hideTip();
@@ -285,14 +291,14 @@ export class GameView {
       return;
     }
     if (document.querySelector('.ptip.on')) {
-      showPlayerTip(this.s, occ, x, y);
+      showPlayerTip(this.s, occ, x, y, { compare: this.tipCompare() });
       return;
     }
     this.tipTimer = window.setTimeout(() => {
       if (this.inDuel || !this.mouseAt) return;
       const now = this.pick(this.mouseAt.x, this.mouseAt.y);
       const p = now ? playerAt(this.s, now.x, now.y) : undefined;
-      if (p) showPlayerTip(this.s, p, this.mouseAt.x, this.mouseAt.y);
+      if (p) showPlayerTip(this.s, p, this.mouseAt.x, this.mouseAt.y, { compare: this.tipCompare() });
     }, 260);
   }
 
@@ -307,7 +313,7 @@ export class GameView {
     this.tipTimer = window.setTimeout(() => {
       if (this.inDuel || !this.hover || !same(this.hover, { x, y })) return;
       const pt = this.renderer.clientPoint(x, y);
-      showPlayerTip(this.s, occ, pt.x + 10, pt.y - 40);
+      showPlayerTip(this.s, occ, pt.x + 10, pt.y - 40, { compare: this.tipCompare() });
     }, 420);
   }
 
@@ -905,7 +911,7 @@ export class GameView {
         onclick: () => (p.team === PLAYER ? this.selectOwn(p.id) : ((this.selectedId = p.id), this.renderPanels())),
         onmouseenter: (e: MouseEvent) => {
           const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          showPlayerTip(this.s, p, r.left, r.top, 'left');
+          showPlayerTip(this.s, p, r.left, r.top, { side: 'left', compare: this.tipCompare() });
         },
         onmouseleave: () => hideTip(),
       },

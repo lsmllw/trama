@@ -1,19 +1,29 @@
 // Tela inicial: os dois elencos, as posições e a dificuldade.
 
 import { createGame, ROLES, WEIGHT_LABEL } from '../core';
-import type { Difficulty, Player, Role } from '../core';
+import type { Difficulty, GameState, Player, Role } from '../core';
 import { clear, h } from './dom';
 import type { MatchConfig } from './game-view';
 import { roleBadge } from './roles';
 import { portraitUrl } from './sprites';
+import { hideTip, showPlayerTip } from './tooltip';
 
 const ROLE_LIST: Role[] = ['goleiro', 'fixo', 'ala', 'pivo'];
 
-function playerRow(p: Player): HTMLElement {
+function playerRow(s: GameState, p: Player): HTMLElement {
   const d = ROLES[p.role];
   return h(
     'div',
-    { class: `roster-row ${p.team}` },
+    {
+      class: `roster-row ${p.team}`,
+      // Mouse em cima: ficha com o radar de atributos.
+      onmouseenter: (e: MouseEvent) => {
+        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        if (p.team === 'azul') showPlayerTip(s, p, r.right + 6, r.top, { preview: true });
+        else showPlayerTip(s, p, r.left, r.top, { preview: true, side: 'left' });
+      },
+      onmouseleave: () => hideTip(),
+    },
     h('img', { src: portraitUrl(p, 3), alt: p.name }),
     h('div', {}, h('b', {}, `#${p.number} ${p.name}`), h('div', { class: 'sub' }, roleBadge(p.role), `${d.name} · ${d.special}`)),
   );
@@ -24,6 +34,7 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
   const demo = createGame({ seed: 1 });
 
   const start = () => {
+    hideTip();
     document.removeEventListener('keydown', onKey);
     onStart({ difficulty, seed: Math.floor(Math.random() * 2 ** 31) });
   };
@@ -75,9 +86,19 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
         h(
           'div',
           { class: 'rosters' },
-          h('div', { class: 'roster azul' }, h('h3', {}, 'Azul (você)'), team('azul').map(playerRow)),
+          h(
+            'div',
+            { class: 'roster azul' },
+            h('h3', {}, 'Azul (você)'),
+            team('azul').map((p) => playerRow(demo, p)),
+          ),
           h('div', { class: 'vs-big' }, '×'),
-          h('div', { class: 'roster vermelho' }, h('h3', {}, 'Vermelho (IA)'), team('vermelho').map(playerRow)),
+          h(
+            'div',
+            { class: 'roster vermelho' },
+            h('h3', {}, 'Vermelho (IA)'),
+            team('vermelho').map((p) => playerRow(demo, p)),
+          ),
         ),
         h('h3', {}, 'As posições'),
         h('div', { class: 'role-grid' }, ROLE_LIST.map(roleCard)),
