@@ -1044,6 +1044,9 @@ export class GameView {
       ),
       h('div', { class: 'sub' }, `Fôlego ${p.fol}/${def.fol}${p.fol < 2 ? ' (cansado: −1 lance)' : ''} · HAB ${p.hab}/${def.hab} · ${ctx}`),
       h('div', { class: 'notice' }, status),
+      s.styles[PLAYER] === 'posse' && hasBall && s.possStreak[PLAYER] - 1 + s.passChain > 0
+        ? h('div', { class: 'notice' }, `Posse trabalhada: +${Math.min(3, s.possStreak[PLAYER] - 1 + s.passChain)} de força no chute.`)
+        : null,
       s.counterPhase && s.styles[PLAYER] === 'contra'
         ? h('div', { class: 'notice' }, `Contra-ataque! Todos andam +1 casa${s.counterAltoUsed ? '' : ' e o 1º passe alto é livre'}.`)
         : null,

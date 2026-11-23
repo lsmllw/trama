@@ -181,6 +181,8 @@ export interface GameState {
   phaseWithBall: boolean;
   /** Fase logo depois de recuperar a bola (vale para o Contra-ataque). */
   counterPhase: boolean;
+  /** Toques curtos completos da Posse de bola nesta fase. */
+  passChain: number;
   /** O passe alto livre do Contra-ataque já foi usado nesta fase. */
   counterAltoUsed: boolean;
   /** A próxima fase começa numa saída de bola (não conta como recuperação). */

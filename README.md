@@ -49,11 +49,11 @@ npm run sim -- 200 veterano   # partidas IA × IA, com estatísticas
 - **4 segundos:** o goleiro com a bola precisa soltá-la na fase seguinte.
 - **Plano de jogo:** antes da partida cada time escolhe um estilo, às cegas; os dois aparecem no apito inicial e podem ser trocados no intervalo.
   - **Pressão alta:** sem a bola ativa 4 e desarma 2 vezes por fase; quem joga sem a bola gasta 2 de fôlego a mais e só 1 fica de prontidão.
-  - **Posse de bola:** toque curto (até 3 casas) só é cortado por quem está em cima da linha e não sofre bote com bônus; cada fase seguida com a bola dá +1 de força no chute (até +2). Passe alto custa 2 de fôlego e chute de longe perde 1 de força.
-  - **Bloco baixo:** sem a bola ativa só 2, mas a prontidão corta a 3 casas e o bote no próprio campo ganha +1; no próprio campo nunca é pego fora de posição.
-  - **Contra-ataque:** na fase depois de recuperar a bola, quem não estava de prontidão do outro lado fica fora de posição (não corta passe nem segura quem tem a bola), todos andam +1 e o 1º passe alto é livre; com a bola por mais de 2 fases seguidas, ativa só 4.
+  - **Posse de bola:** toque curto (até 3 casas) só é cortado por quem está em cima da linha, não sofre bote com bônus e não é segurado pela marcação por zona; cada fase seguida com a bola e cada toque curto na fase dão +1 de força no chute (até +3). Passe alto custa 2 de fôlego e chute de longe perde 1 de força.
+  - **Bloco baixo:** de prontidão no próprio campo, marca por zona (segura quem tem a bola a 2 casas), corta passe a 3 e o bote ganha +1; ali nunca é pego fora de posição. Sem a bola ativa só 2, com ela só 4, e cansa quando o adversário segura a bola (cada fase seguida dele custa 1, 2, 3… de fôlego).
+  - **Contra-ataque:** roubou a bola na própria fase, ganha +2 jogadores na hora (até 5). No contra-ataque, quem não estava de prontidão do outro lado fica fora de posição (não corta passe nem segura quem tem a bola), todos andam +1 e o 1º passe alto é livre. Com a bola por mais de 3 fases seguidas, ativa só 4.
   - **Equilíbrio:** sem vantagem nem fraqueza de estilo.
-  - Ciclo pretendido: Pressão > Posse > Bloco > Contra > Pressão. `npx tsx scripts/study.ts veterano:pressao veterano:posse 40 1 saida.json` mede um confronto.
+  - Ciclo pretendido: Pressão > Posse > Bloco > Contra > Pressão. `npx tsx scripts/study.ts veterano:pressao veterano:posse 80 1 saida.json` mede um confronto; `npx tsx scripts/style-diag.ts posse bloco 40` mostra posse, recuperações e gols de contra-ataque.
 - **Dificuldade:** Recruta joga o óbvio; Veterano pesa riscos e guarda prontidão; Craque testa as jogadas até o fim da fase e lê seus hábitos nos Duelos.
 
 ## Controles

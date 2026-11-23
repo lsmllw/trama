@@ -1,6 +1,6 @@
 // Regras da partida de futsal: posse, movimento, passe, chute, duelos, faltas e tempos.
 
-import { BLOCO_CUT, POSSE_SHORT, PRESSAO_FOL, STYLES } from './estilos';
+import { BLOCO_CUT, CONTRA_EXTRA, CONTRA_STREAK, POSSE_MAX_BONUS, POSSE_SHORT, PRESSAO_FOL, STYLES } from './estilos';
 import type { Style } from './estilos';
 import {
   CHUTE_BASE,
@@ -87,7 +87,9 @@ function phaseLimits(s: GameState): void {
   s.activationsMax = withBall ? MAX_ACTIVATIONS_ATK : MAX_ACTIVATIONS;
   if (!withBall && style === 'pressao') s.activationsMax = 4;
   if (!withBall && style === 'bloco') s.activationsMax = 2;
-  if (withBall && style === 'contra' && s.possStreak[team] > 2) s.activationsMax = 4;
+  if (withBall && style === 'contra' && s.possStreak[team] > CONTRA_STREAK) s.activationsMax = 4;
+  // Bloco baixo: mesmo atacando, o último homem fica de prontidão lá atrás.
+  if (withBall && style === 'bloco') s.activationsMax = 4;
 }
 
 /** Troca o estilo de um time (no intervalo, ou antes da saída de bola). */
@@ -172,6 +174,7 @@ export function createGame(opts: NewGameOptions = {}): GameState {
     phaseWithBall: false,
     counterPhase: false,
     counterAltoUsed: false,
+    passChain: 0,
     kickoff: false,
     rng: (opts.seed ?? 1) | 0,
     events: [],
@@ -221,9 +224,15 @@ function startPhase(s: GameState, team: Team): void {
   s.phaseWithBall = withBall;
   s.counterPhase = withBall && prevStreak === 0 && !s.kickoff;
   s.counterAltoUsed = false;
+  s.passChain = 0;
   s.kickoff = false;
   phaseLimits(s);
   s.tacklesUsed = 0;
+  // Bloco baixo cansa quando o adversário fica com a bola: cada fase seguida dele custa mais fôlego.
+  if (withBall && styleOf(s, other(team)) === 'bloco' && s.possStreak[team] >= 2) {
+    const drain = s.possStreak[team] - 1;
+    for (const q of teamPlayers(s, other(team))) if (q.role !== 'goleiro') q.fol = Math.max(0, q.fol - drain);
+  }
   s.pendingReaction = null;
   for (const p of s.players) {
     p.altoRecebido = false;
@@ -347,6 +356,17 @@ function finishActivation(s: GameState): void {
   if (s.keeperMustPass === p.id) s.keeperMustPass = null;
   s.activation = null;
   s.pendingReaction = null;
+  checkCounter(s);
+}
+
+/** Contra-ataque: roubou a bola na própria fase, sai na hora — mais 2 jogadores (até 5) e o adversário desarrumado. */
+function checkCounter(s: GameState): void {
+  if (s.over || s.phaseWithBall || s.counterPhase || !s.holder) return;
+  if (holderOf(s).team !== s.activeTeam || styleOf(s, s.activeTeam) !== 'contra') return;
+  s.counterPhase = true;
+  s.activationsMax = Math.min(MAX_ACTIVATIONS_ATK, s.activationsMax + CONTRA_EXTRA);
+  s.events.push({ kind: 'apito', text: 'Contra-ataque!' });
+  s.log.push(`${TEAM_NAME[s.activeTeam]} recupera e sai no contra-ataque!`);
 }
 
 /** Regra dos 4 segundos: o goleiro segurou demais; a bola vai para o adversário mais perto. */
@@ -454,8 +474,20 @@ export function outOfPosition(s: GameState, q: Player): boolean {
   return true;
 }
 
+/** Bloco baixo: de prontidão no próprio campo, marca por zona (segura quem tem a bola a 2 casas, não só colado). */
+export function zoneMarker(s: GameState, q: Player): boolean {
+  return q.ready && !q.unbalanced && styleOf(s, q.team) === 'bloco' && dist(center(q), ownGoal(q.team)) < COURT_W / 2;
+}
+
 function marked(s: GameState, p: Player, x: number, y: number): boolean {
-  return s.players.some((q) => q.team !== p.team && !q.unbalanced && !outOfPosition(s, q) && Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) === 1);
+  return s.players.some(
+    // A troca de passes da Posse de bola desmonta a zona: contra ela, só segura quem está colado.
+    (q) =>
+      q.team !== p.team &&
+      !q.unbalanced &&
+      !outOfPosition(s, q) &&
+      Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) <= (zoneMarker(s, q) && styleOf(s, p.team) !== 'posse' ? 2 : 1),
+  );
 }
 
 function canStand(s: GameState, p: Player, x: number, y: number): boolean {
@@ -691,8 +723,9 @@ export function shotPreview(s: GameState, p: Player, bomba = false, direto = fal
   const near = d <= 2.5 ? 2 : d <= 3.5 ? 1 : d <= 5.5 ? 0 : d <= 7.5 ? -1 : -2;
   // Posse de bola: o time não treina o chute de fora.
   const longPosse = !direto && d > 5.5 && styleOf(s, p.team) === 'posse' ? 1 : 0;
-  // ...mas trabalhar a bola abre a defesa: +1 de força por fase seguida com a bola depois da primeira (até +2).
-  const worked = !direto && styleOf(s, p.team) === 'posse' && p.team === s.activeTeam ? Math.min(2, Math.max(0, s.possStreak[p.team] - 1)) : 0;
+  // ...mas trabalhar a bola abre a defesa: +1 de força por fase seguida com a bola e por toque curto na fase (até +3).
+  const worked =
+    !direto && styleOf(s, p.team) === 'posse' && p.team === s.activeTeam ? Math.min(POSSE_MAX_BONUS, Math.max(0, s.possStreak[p.team] - 1) + s.passChain) : 0;
   const force = def.fin + (bomba ? 2 : 0) + near - (wide ? 1 : 0) - longPosse + worked;
   const keeper = keeperOf(s, other(p.team));
   const ref = keeper ? ROLES.goleiro.ref + (keeper.muralha ? 2 : 0) : 0;
@@ -825,7 +858,10 @@ export function pass(s: GameState, toId: string, alto: boolean): PassOutcome {
   }
   s.holder = to.id;
   if (alto) to.altoRecebido = true;
-  if (!alto && pv.result === 'ok' && styleOf(s, p.team) === 'posse' && pv.dist <= POSSE_SHORT + 0.01) to.toqueCurto = true;
+  if (!alto && pv.result === 'ok' && styleOf(s, p.team) === 'posse' && pv.dist <= POSSE_SHORT + 0.01) {
+    to.toqueCurto = true;
+    s.passChain++;
+  }
   s.events.push({ kind: 'passe', fromId: p.id, toId: to.id, from: { x: p.x, y: p.y }, to: { x: to.x, y: to.y }, alto, result: pv.result });
   p.facing = dirFromTo(p, to);
   if (pv.result === 'dividida') {

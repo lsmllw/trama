@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   absRound,
+  activationsLeft,
   cutRange,
   moveRange,
   setStyle,
@@ -538,14 +539,72 @@ describe('estilos de jogo', () => {
     pass(s, piv.id, true);
     expect(dudu.fol).toBe(fol);
     expect(passPreview(s, dudu, piv, true).result).toBe('dividida'); // só o primeiro é livre
-    // Três fases seguidas com a bola: o time ativa só 4.
+    // Mais de 3 fases seguidas com a bola: o time ativa só 4.
     const s2 = createGame({ seed: 1, styles: { azul: 'contra' } });
-    endPhase(s2);
-    endPhase(s2);
+    for (let i = 0; i < 4; i++) endPhase(s2);
     expect(s2.activationsMax).toBe(5);
     endPhase(s2);
     endPhase(s2);
     expect(s2.activationsMax).toBe(4);
+  });
+  it('Contra-ataque: roubou na própria fase, ganha mais 2 jogadores na hora', () => {
+    const s = createGame({ seed: 1, styles: { vermelho: 'contra' } });
+    endPhase(s); // Vermelho, sem a bola: ativa 3
+    expect(s.activationsMax).toBe(3);
+    const p = activatable(s)[0];
+    beginActivation(s, p.id);
+    s.holder = p.id; // como se tivesse roubado
+    endActivation(s);
+    expect(s.counterPhase).toBe(true);
+    expect(s.activationsMax).toBe(5);
+    expect(activationsLeft(s)).toBe(4);
+  });
+  it('Bloco baixo: mesmo com a bola, ativa só 4 (o último homem fica de prontidão)', () => {
+    const s = createGame({ seed: 1, styles: { azul: 'bloco' } });
+    expect(s.activationsMax).toBe(4);
+  });
+  it('Bloco baixo marca por zona no próprio campo (segura a 2 casas), mas não contra a Posse de bola', () => {
+    for (const style of ['equilibrio', 'posse'] as const) {
+      const s = createGame({ seed: 1, styles: { azul: style, vermelho: 'bloco' } });
+      clearCourt(s);
+      const dudu = byName(s, 'Dudu');
+      const tonhao = byName(s, 'Tonhão');
+      dudu.x = 10;
+      dudu.y = 5;
+      tonhao.x = 15;
+      tonhao.y = 5;
+      tonhao.ready = true;
+      s.holder = dudu.id;
+      beginActivation(s, dudu.id);
+      const far = destinations(s).filter((c) => c.x >= 14);
+      // Pela zona, ninguém passa de x = 13 (a 2 casas do Tonhão) na linha dele.
+      if (style === 'equilibrio') expect(far.some((c) => c.y === 5)).toBe(false);
+      else expect(far.length).toBeGreaterThan(0);
+    }
+  });
+  it('Bloco baixo cansa quando o adversário segura a bola', () => {
+    const s = createGame({ seed: 1, styles: { vermelho: 'bloco' } });
+    const tonhao = byName(s, 'Tonhão');
+    endPhase(s); // Vermelho
+    const before = tonhao.fol;
+    endPhase(s); // Azul, 2ª fase seguida com a bola: o bloco perde 1
+    expect(tonhao.fol).toBe(before - 1);
+  });
+  it('Posse de bola: cada toque curto na fase dá +1 de força no chute', () => {
+    const s = createGame({ seed: 1, styles: { azul: 'posse' } });
+    clearCourt(s);
+    const dudu = byName(s, 'Dudu');
+    const piv = byName(s, 'Marreta');
+    dudu.x = 14;
+    dudu.y = 5;
+    piv.x = 16;
+    piv.y = 5;
+    s.holder = dudu.id;
+    const f0 = shotPreview(s, piv).force;
+    beginActivation(s, dudu.id);
+    pass(s, piv.id, false);
+    expect(s.passChain).toBe(1);
+    expect(shotPreview(s, piv).force).toBe(f0 + 1);
   });
   it('troca de estilo no começo da fase já muda os limites', () => {
     const s = createGame({ seed: 1 });
