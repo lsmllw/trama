@@ -9,6 +9,10 @@ import {
   HAB_REGEN,
   ROLES,
   ROSTERS,
+  DRINK_CHANCE,
+  DRINK_MAX,
+  DRINK_MOVE,
+  DRINK_ROUNDS,
   ROUNDS_PER_HALF,
   SPRINT_BONUS,
   SPRINT_COST,
@@ -35,8 +39,9 @@ import {
   teamPlayers,
 } from './court';
 import { duelOutcome, otherSide, startDuel } from './duelo';
+import { nextRandom, pick } from './rng';
 import type { DuelState } from './duelo';
-import type { Activation, Corner, GameState, Player, Pos, Team } from './types';
+import type { Activation, Corner, Drink, GameState, Player, Pos, Team } from './types';
 
 // ---------- Criação e saída de bola ----------
 
@@ -83,6 +88,7 @@ export function createGame(opts: NewGameOptions = {}): GameState {
         pedalada: false,
         muralha: false,
         goals: 0,
+        energetico: false,
       });
     });
   }
@@ -102,6 +108,8 @@ export function createGame(opts: NewGameOptions = {}): GameState {
     activation: null,
     keeperMustPass: null,
     pendingDirect: null,
+    drinks: [],
+    drinkSeq: 0,
     rng: (opts.seed ?? 1) | 0,
     events: [],
     log: [],
@@ -127,6 +135,8 @@ function placeForKickoff(s: GameState, kicking: Team): void {
       positions[p.id] = { x: p.x, y: p.y };
     });
   }
+  // Garrafa que ficou embaixo de alguém na volta às posições sai da quadra.
+  for (const d of [...s.drinks]) if (playerAt(s, d.x, d.y)) removeDrink(s, d);
   const piv = teamPlayers(s, kicking).find((p) => p.role === 'pivo')!;
   s.holder = piv.id;
   s.events.push({ kind: 'reset', positions, holderId: piv.id });
@@ -148,6 +158,8 @@ function startPhase(s: GameState, team: Team): void {
   }
   const h = holderOf(s);
   s.keeperMustPass = h.team === team && h.role === 'goleiro' ? h.id : null;
+  // Começo de rodada: garrafas velhas somem e a torcida pode jogar outra.
+  if (team === (s.half === 1 ? s.firstKick : other(s.firstKick))) drinksTick(s);
 }
 
 /** Fases jogadas neste tempo (2 por rodada). */
@@ -177,6 +189,7 @@ export function endPhase(s: GameState): void {
         p.hab = ROLES[p.role].hab;
       }
       s.events.push({ kind: 'apito', text: 'Intervalo', long: true });
+      for (const d of [...s.drinks]) removeDrink(s, d);
       const k = other(s.firstKick);
       placeForKickoff(s, k);
       s.events.push({ kind: 'apito', text: '2º tempo', long: true });
@@ -214,7 +227,7 @@ export function beginActivation(s: GameState, id: string): void {
     if (s.activation.moved || s.activation.acted) endActivation(s);
     else s.activation = null;
   }
-  s.activation = { playerId: id, startX: p.x, startY: p.y, moved: false, acted: false, sprinted: false, bonus: false };
+  s.activation = { playerId: id, startX: p.x, startY: p.y, moved: false, acted: false, sprinted: false, bonus: false, energized: false, picked: null };
 }
 
 export function cancelActivation(s: GameState): void {
@@ -248,6 +261,69 @@ export function endActivation(s: GameState): void {
   if (!s.activation) throw new Error('Nenhum jogador em ação');
   finishActivation(s);
   if (!s.over && activatable(s).length === 0) endPhase(s);
+}
+
+// ---------- Energético ----------
+
+/** Rodada contada desde o começo da partida (1 a 16). */
+export function absRound(s: GameState): number {
+  return (s.half - 1) * ROUNDS_PER_HALF + s.round;
+}
+
+function removeDrink(s: GameState, d: Drink): void {
+  s.drinks = s.drinks.filter((q) => q.id !== d.id);
+  s.events.push({ kind: 'garrafa', acao: 'some', drinkId: d.id });
+}
+
+function collectDrink(s: GameState, p: Player, d: Drink): void {
+  s.drinks = s.drinks.filter((q) => q.id !== d.id);
+  p.energetico = true;
+  s.events.push({ kind: 'garrafa', acao: 'pega', drinkId: d.id, playerId: p.id });
+  s.log.push(`${p.name} pega o energético!`);
+}
+
+/** Começo de rodada: tira as garrafas vencidas e, às vezes, a torcida joga uma nova numa casa livre. */
+function drinksTick(s: GameState): void {
+  const now = absRound(s);
+  for (const d of [...s.drinks]) if (now >= d.expires) removeDrink(s, d);
+  if (now < 2 || s.drinks.length >= DRINK_MAX || nextRandom(s) >= DRINK_CHANCE) return;
+  const cells: Pos[] = [];
+  const far: Pos[] = [];
+  for (let x = 2; x < COURT_W - 2; x++) {
+    for (let y = 0; y < COURT_H; y++) {
+      const c = { x, y };
+      if (playerAt(s, x, y) || s.drinks.some((d) => same(d, c)) || inArea('azul', c) || inArea('vermelho', c)) continue;
+      cells.push(c);
+      if (s.players.every((p) => chebyshev(p, c) >= 2)) far.push(c);
+    }
+  }
+  if (!cells.length) return;
+  const c = pick(s, far.length ? far : cells);
+  const fromTop = c.y < COURT_H / 2;
+  const d: Drink = { id: `g${++s.drinkSeq}`, x: c.x, y: c.y, born: now, expires: now + DRINK_ROUNDS };
+  s.drinks.push(d);
+  s.events.push({ kind: 'garrafa', acao: 'cai', drink: d, from: { x: c.x + 0.5 + (nextRandom(s) - 0.5) * 5, y: fromTop ? -1.8 : COURT_H + 1.8 } });
+  s.log.push('A torcida joga um energético na quadra!');
+}
+
+export function canUseDrink(s: GameState): boolean {
+  const a = s.activation;
+  if (!a || a.acted || a.energized) return false;
+  return getPlayer(s, a.playerId).energetico;
+}
+
+/** Toma o energético: fôlego e HAB cheios e, se ainda não andou, +2 casas nesta ativação. Não gasta a ação. */
+export function useDrink(s: GameState): void {
+  if (!canUseDrink(s)) throw new Error('Sem energético para tomar agora');
+  const a = s.activation!;
+  const p = getPlayer(s, a.playerId);
+  const def = ROLES[p.role];
+  p.energetico = false;
+  p.fol = def.fol;
+  p.hab = def.hab;
+  a.energized = true;
+  s.events.push({ kind: 'garrafa', acao: 'usa', playerId: p.id });
+  s.log.push(`${p.name} toma o energético: fôlego cheio${a.moved ? '' : ' e +2 casas'}!`);
 }
 
 // ---------- Movimento ----------
@@ -307,7 +383,7 @@ export function destinations(s: GameState): Pos[] {
   if (!a || a.moved || a.acted) return [];
   const p = getPlayer(s, a.playerId);
   const out: Pos[] = [];
-  for (const k of reach(s, p, moveRange(s, p, a.sprinted)).keys()) {
+  for (const k of reach(s, p, moveRange(s, p, a.sprinted) + (a.energized ? DRINK_MOVE : 0)).keys()) {
     const [x, y] = k.split(',').map(Number);
     if (x !== p.x || y !== p.y) out.push({ x, y });
   }
@@ -331,7 +407,7 @@ export function moveTo(s: GameState, x: number, y: number): void {
   const a = s.activation;
   if (!a || a.moved || a.acted) throw new Error('Não dá para andar agora');
   const p = getPlayer(s, a.playerId);
-  const r = reach(s, p, moveRange(s, p, a.sprinted));
+  const r = reach(s, p, moveRange(s, p, a.sprinted) + (a.energized ? DRINK_MOVE : 0));
   if (!r.has(`${x},${y}`) || (x === p.x && y === p.y)) throw new Error('Casa fora do alcance');
   const path: Pos[] = [];
   let k: string | null = `${x},${y}`;
@@ -345,6 +421,16 @@ export function moveTo(s: GameState, x: number, y: number): void {
   p.y = y;
   p.facing = dirFromTo(last, { x, y });
   a.moved = true;
+  // Passou por uma garrafa (e ainda não tem uma): pega no caminho. O movimento é dividido para a tela.
+  const at = p.energetico ? -1 : path.findIndex((c, i) => i > 0 && s.drinks.some((d) => same(d, c)));
+  if (at > 0) {
+    const d = s.drinks.find((q) => same(q, path[at]))!;
+    s.events.push({ kind: 'move', id: p.id, path: path.slice(0, at + 1), withBall: s.holder === p.id, sprint: a.sprinted });
+    collectDrink(s, p, d);
+    a.picked = d;
+    if (at < path.length - 1) s.events.push({ kind: 'move', id: p.id, path: path.slice(at), withBall: s.holder === p.id, sprint: a.sprinted });
+    return;
+  }
   s.events.push({ kind: 'move', id: p.id, path, withBall: s.holder === p.id, sprint: a.sprinted });
 }
 
@@ -356,6 +442,13 @@ export function undoMove(s: GameState): void {
   p.x = a.startX;
   p.y = a.startY;
   a.moved = false;
+  if (a.picked) {
+    // A garrafa volta para onde estava.
+    p.energetico = false;
+    s.drinks.push(a.picked);
+    s.events.push({ kind: 'garrafa', acao: 'volta', drink: a.picked });
+    a.picked = null;
+  }
   if (a.sprinted) {
     a.sprinted = false;
     p.fol += SPRINT_COST;
@@ -671,6 +764,8 @@ export function applyDuel(s: GameState, cs: DuelState): ReturnType<typeof duelOu
     }
     markP.unbalanced = true;
     s.events.push({ kind: 'duelo', holderId: ballP.id, otherId: markP.id, result: 'passou', to: free ? to : undefined });
+    const d = free && !ballP.energetico ? s.drinks.find((q) => same(q, to)) : undefined;
+    if (d) collectDrink(s, ballP, d);
     s.events.push({ kind: 'emote', id: ballP.id, emote: 'musica' });
     s.log.push(`${ballP.name} passa por ${markP.name}!`);
     if (holderActing) a!.bonus = true;

@@ -50,6 +50,7 @@ function content(s: GameState, p: Player, opts: TipOptions): HTMLDivElement[] {
     if (p.muralha) status.push(['🧱', 'Muralha ativa: reflexo +2']);
     if (p.pedalada) status.push(['🌀', 'Pedalada pronta: +1 Leitura e fintas sem HAB no próximo Duelo']);
     if (s.activeTeam === p.team && p.activated && !s.over) status.push(['✓', 'Já jogou nesta fase']);
+    if (p.energetico) status.push(['🧃', 'Energético guardado (G): fôlego e HAB cheios e +2 casas']);
     if (p.goals) status.push(['🥅', `${p.goals} gol${p.goals > 1 ? 's' : ''} na partida`]);
   }
   const cmp = opts.compare && opts.compare.id !== p.id ? opts.compare : undefined;

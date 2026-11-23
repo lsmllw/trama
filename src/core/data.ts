@@ -107,18 +107,58 @@ export interface RosterEntry {
 export const ROSTERS: Record<Team, RosterEntry[]> = {
   azul: [
     { name: 'Gui', number: 1, role: 'goleiro', look: { skin: '#f1c9a5', hair: 'franja', hairColor: '#3a2a1e', build: 'forte' } },
-    { name: 'Rafa', number: 4, role: 'fixo', look: { skin: '#c68a5e', hair: 'curto', hairColor: '#1d1a18', acc: 'barba', accColor: '#1d1a18', build: 'forte' } },
+    {
+      name: 'Rafa',
+      number: 4,
+      role: 'fixo',
+      look: { skin: '#c68a5e', hair: 'curto', hairColor: '#1d1a18', acc: 'barba', accColor: '#1d1a18', build: 'forte' },
+    },
     { name: 'Dudu', number: 7, role: 'ala', look: { skin: '#8a5a3c', hair: 'black', hairColor: '#1b1410', acc: 'faixa', accColor: '#ffffff', build: 'magro' } },
-    { name: 'Teco', number: 11, role: 'ala', look: { skin: '#f5d3b5', hair: 'espetado', hairColor: '#e8c24a', acc: 'munhequeira', accColor: '#ffffff', build: 'magro' } },
-    { name: 'Marreta', number: 9, role: 'pivo', look: { skin: '#a8714a', hair: 'careca', hairColor: '#2a1b12', acc: 'bigode', accColor: '#2a1b12', build: 'forte' } },
+    {
+      name: 'Teco',
+      number: 11,
+      role: 'ala',
+      look: { skin: '#f5d3b5', hair: 'espetado', hairColor: '#e8c24a', acc: 'munhequeira', accColor: '#ffffff', build: 'magro' },
+    },
+    {
+      name: 'Marreta',
+      number: 9,
+      role: 'pivo',
+      look: { skin: '#a8714a', hair: 'careca', hairColor: '#2a1b12', acc: 'bigode', accColor: '#2a1b12', build: 'forte' },
+    },
   ],
   vermelho: [
     { name: 'Biel', number: 12, role: 'goleiro', look: { skin: '#e8b896', hair: 'rabo', hairColor: '#5a3a22', build: 'forte' } },
     { name: 'Tonhão', number: 3, role: 'fixo', look: { skin: '#6e452c', hair: 'moicano', hairColor: '#151010', build: 'forte' } },
-    { name: 'Pity', number: 10, role: 'ala', look: { skin: '#f3cfae', hair: 'cacheado', hairColor: '#b4542a', acc: 'oculos', accColor: '#2b2b33', build: 'magro' } },
-    { name: 'Lelo', number: 8, role: 'ala', look: { skin: '#b98058', hair: 'franja', hairColor: '#2b1e16', acc: 'bandana', accColor: '#ffffff', build: 'magro' } },
-    { name: 'Bigode', number: 5, role: 'pivo', look: { skin: '#d9a27a', hair: 'curto', hairColor: '#4a3122', acc: 'bigode', accColor: '#4a3122', build: 'forte' } },
+    {
+      name: 'Pity',
+      number: 10,
+      role: 'ala',
+      look: { skin: '#f3cfae', hair: 'cacheado', hairColor: '#b4542a', acc: 'oculos', accColor: '#2b2b33', build: 'magro' },
+    },
+    {
+      name: 'Lelo',
+      number: 8,
+      role: 'ala',
+      look: { skin: '#b98058', hair: 'franja', hairColor: '#2b1e16', acc: 'bandana', accColor: '#ffffff', build: 'magro' },
+    },
+    {
+      name: 'Bigode',
+      number: 5,
+      role: 'pivo',
+      look: { skin: '#d9a27a', hair: 'curto', hairColor: '#4a3122', acc: 'bigode', accColor: '#4a3122', build: 'forte' },
+    },
   ],
 };
 
 export const TEAM_NAME: Record<Team, string> = { azul: 'Azul', vermelho: 'Vermelho' };
+
+// Energético jogado pela torcida.
+/** Chance de cair uma garrafa no começo de cada rodada (a partir da 2ª). */
+export const DRINK_CHANCE = 0.3;
+/** Garrafas na quadra ao mesmo tempo, no máximo. */
+export const DRINK_MAX = 2;
+/** Rodadas que a garrafa fica na quadra (pisca na última). */
+export const DRINK_ROUNDS = 3;
+/** Casas a mais de movimento na ativação em que o jogador toma o energético. */
+export const DRINK_MOVE = 2;

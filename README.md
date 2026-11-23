@@ -44,6 +44,7 @@ npm run sim -- 200 veterano   # partidas IA × IA, com estatísticas
 - **Duelo** (drible, desarme, carrinho, dividida): 3 tempos. Arrancada/Bote vence Finta · Proteger/Fechar vence Arrancada/Bote · Finta vence Proteger e quem espera. Quem tem a bola fica com ela no empate. Bote contra quem protege é falta.
 - **Chute:** você escolhe o canto, o goleiro escolhe o lado. Diferença de 3 entre força e reflexo deixa o melhor ler o outro.
 - **Faltas:** a partir da 6ª do time no tempo, tiro livre direto do 10 m, sem barreira.
+- **Energético:** de vez em quando a torcida joga uma garrafa numa casa livre. Quem passa por ela guarda (uma por jogador) e toma quando quiser na vez dele (**G**): fôlego e HAB cheios e +2 casas de movimento, sem gastar a ação. A garrafa fica 3 rodadas e pisca na última antes de sumir.
 - **4 segundos:** o goleiro com a bola precisa soltá-la na fase seguinte.
 
 ## Controles

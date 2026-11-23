@@ -442,3 +442,55 @@ export function portraitUrl(p: Player, scale = 3): string {
 
 /** A bola (7×7, com gomos), desenhada por cima de tudo. */
 export const BALL = ['..kkk..', '.kwwwk.', 'kwkkwwk', 'kwkkwkk', 'kwwwwwk', '.kwkwk.', '..kkk..'];
+
+// ---------- Garrafa de energético ----------
+
+const DRINK = [
+  '..kkk..',
+  '..kSk..',
+  '..kkk..',
+  '..kGk..',
+  '.kGGGk.',
+  'kGwGGGk',
+  'kGwGGdk',
+  'kkkykkk',
+  'kkyykkk',
+  'kkkyykk',
+  'kkkykkk',
+  'kGwGGdk',
+  'kGGGGdk',
+  '.kkkkk.',
+];
+const DRINK_COLORS: Record<string, string> = { k: '#10141a', S: '#d8dde6', G: '#2ee86a', d: '#17a34a', w: '#c9ffd9', y: '#ffe14d' };
+
+/** Garrafa de energético em pixel art (7×14), guardada em cache. */
+export function drinkSprite(white = false): HTMLCanvasElement {
+  const key = `drink:${white}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = 7;
+  c.height = DRINK.length;
+  const ctx = c.getContext('2d')!;
+  DRINK.forEach((row, y) => {
+    for (let x = 0; x < row.length; x++) {
+      const ch = row[x];
+      if (ch === '.') continue;
+      ctx.fillStyle = white ? '#ffffff' : DRINK_COLORS[ch];
+      ctx.fillRect(x, y, 1, 1);
+    }
+  });
+  cache.set(key, c);
+  return c;
+}
+
+export function drinkIconUrl(scale = 2): string {
+  const src = drinkSprite();
+  const c = document.createElement('canvas');
+  c.width = src.width * scale;
+  c.height = src.height * scale;
+  const ctx = c.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(src, 0, 0, c.width, c.height);
+  return c.toDataURL();
+}

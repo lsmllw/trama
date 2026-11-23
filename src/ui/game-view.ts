@@ -9,6 +9,7 @@ import {
   cancelActivation,
   canSprint,
   canUseSpecial,
+  canUseDrink,
   chebyshev,
   chooseCorner,
   chooseDive,
@@ -43,6 +44,7 @@ import {
   TEAM_NAME,
   undoMove,
   useSpecial,
+  useDrink,
 } from '../core';
 import type { Corner, Difficulty, DuelState, GameState, LanceMemory, Player, Pos, Target, Team } from '../core';
 import { clear, h } from './dom';
@@ -51,7 +53,7 @@ import { emptyHighlights, Renderer } from './renderer';
 import type { Highlights, TargetMark } from './renderer';
 import { chooseShotCorner } from './shot-modal';
 import { roleBadge } from './roles';
-import { portraitUrl } from './sprites';
+import { drinkIconUrl, portraitUrl } from './sprites';
 import { hideTip, showPlayerTip } from './tooltip';
 
 export interface MatchConfig {
@@ -789,6 +791,12 @@ export class GameView {
     void this.act(() => useSpecial(this.s));
   }
 
+  /** Toma o energético guardado: fôlego e HAB cheios e, se ainda não andou, +2 casas. */
+  private doDrink(): void {
+    if (this.busy || !this.isPlayerTurn() || !canUseDrink(this.s)) return;
+    void this.act(() => useDrink(this.s));
+  }
+
   private doShot(bomba: boolean): void {
     const t = this.shotTarget(bomba);
     if (!t || this.busy) return;
@@ -846,6 +854,7 @@ export class GameView {
     else if (k === 'c') this.doShot(false);
     else if (k === 'b') this.doShot(true);
     else if (k === 'h') this.doSpecial();
+    else if (k === 'g') this.doDrink();
   };
 
   // ---------- Painéis ----------
@@ -903,6 +912,7 @@ export class GameView {
     if (p.ready && s.activeTeam !== p.team) tags.push('❗');
     if (p.muralha) tags.push('🧱');
     if (p.pedalada) tags.push('🌀');
+    if (p.energetico) tags.push('🧃');
     const bar = (v: number, max: number, cls: string) => h('div', { class: `bar ${cls}` }, h('div', { style: `width:${(100 * v) / max}%` }));
     return h(
       'div',
@@ -1054,6 +1064,19 @@ export class GameView {
                 title: def.specialText,
               },
               `H · ${def.special}`,
+            )
+          : null,
+        p.energetico
+          ? h(
+              'button',
+              {
+                class: 'drink-btn',
+                disabled: !canUseDrink(s),
+                onclick: () => this.doDrink(),
+                title: 'Fôlego e HAB cheios e, se ainda não andou, +2 casas nesta jogada. Não gasta a ação.',
+              },
+              h('img', { src: drinkIconUrl(2), alt: '' }),
+              'G · Energético',
             )
           : null,
         h('button', { disabled: !(a.moved && !a.acted), onclick: () => this.escape() }, 'X · Desfazer'),

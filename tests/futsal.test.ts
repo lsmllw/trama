@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  absRound,
   applyDuel,
+  canUseDrink,
+  drainEvents,
+  undoMove,
+  useDrink,
   attrLances,
   beginActivation,
   createGame,
@@ -261,3 +266,62 @@ describe('IA', () => {
 
 void getPlayer;
 void moveTo;
+
+describe('energético', () => {
+  it('a torcida joga garrafas em casas livres, que somem depois de 3 rodadas', () => {
+    let spawned = 0;
+    for (let seed = 1; seed <= 6; seed++) {
+      const s = createGame({ seed });
+      const seen = new Map<string, number>();
+      while (!s.over) {
+        for (const d of s.drinks) {
+          expect(s.players.some((p) => p.x === d.x && p.y === d.y && p.id)).toBe(false);
+          expect(inArea('azul', d) || inArea('vermelho', d)).toBe(false);
+          seen.set(d.id, d.born);
+          expect(absRound(s)).toBeLessThan(d.expires);
+          expect(d.expires - d.born).toBe(3);
+        }
+        expect(s.drinks.length).toBeLessThanOrEqual(2);
+        endPhase(s);
+      }
+      spawned += seen.size;
+    }
+    expect(spawned).toBeGreaterThan(6);
+  });
+
+  it('pega a garrafa no caminho, desfazer devolve, e tomar dá fôlego cheio e +2 casas', () => {
+    const s = createGame({ seed: 3 });
+    clearCourt(s);
+    const dudu = byName(s, 'Dudu');
+    dudu.x = 5;
+    dudu.y = 2;
+    dudu.fol = 3;
+    s.holder = byName(s, 'Gui').id;
+    s.drinks = [{ id: 'g9', x: 7, y: 2, born: 1, expires: 4 }];
+    drainEvents(s);
+    beginActivation(s, dudu.id);
+    const range = destinations(s).length;
+    moveTo(s, 9, 2);
+    expect(dudu.energetico).toBe(true);
+    expect(s.drinks).toHaveLength(0);
+    const ev = drainEvents(s);
+    expect(ev.map((e) => e.kind)).toEqual(['move', 'garrafa', 'move']);
+    undoMove(s);
+    expect(dudu.energetico).toBe(false);
+    expect(s.drinks).toHaveLength(1);
+    moveTo(s, 7, 2);
+    expect(dudu.energetico).toBe(true);
+    endActivation(s);
+    // Na próxima ativação dele, o energético rende.
+    s.activeTeam = 'azul';
+    dudu.activated = false;
+    beginActivation(s, dudu.id);
+    const before = destinations(s).length;
+    expect(canUseDrink(s)).toBe(true);
+    useDrink(s);
+    expect(dudu.fol).toBe(10);
+    expect(dudu.energetico).toBe(false);
+    expect(destinations(s).length).toBeGreaterThan(before);
+    expect(range).toBeGreaterThan(0);
+  });
+});

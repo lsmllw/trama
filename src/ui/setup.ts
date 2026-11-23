@@ -126,6 +126,11 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
               'No chute você escolhe o canto e o goleiro escolhe o lado. A partir da 6ª falta do time no tempo, toda falta é tiro livre direto do 10 m.',
             ),
             h('li', {}, 'Goleiro com a bola tem que soltar na fase seguinte (regra dos 4 segundos).'),
+            h(
+              'li',
+              {},
+              'De vez em quando a torcida joga uma garrafa de energético na quadra. Quem passar por ela guarda e toma quando quiser (G): fôlego e HAB cheios e +2 casas. A garrafa fica 3 rodadas e pisca na última.',
+            ),
           ),
         ),
         h(

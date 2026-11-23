@@ -9,6 +9,7 @@ import {
   applyDuel,
   beginActivation,
   canSprint,
+  canUseDrink,
   canUseSpecial,
   createGame,
   currentTargets,
@@ -22,6 +23,7 @@ import {
   shotPreview,
   shotResult,
   sprint,
+  useDrink,
   startDribble,
   startTackle,
   takeDirectKick,
@@ -86,6 +88,9 @@ export function evaluate(s: GameState, team: Team): number {
   // Goleiro em casa: perto do centro do gol e entre a bola e o gol.
   const gk = keeperOf(s, team);
   if (gk) v -= 1.5 * dist(center(gk), ownGoal(team)) + (inArea(team, gk) ? 0 : 25);
+  // Energético guardado vale um pouco (a IA desvia para pegar garrafas quando sai barato).
+  const keep = s.half === 2 && s.round >= 8 ? 0 : 3; // na última rodada, guardar não vale nada
+  for (const p of s.players) if (p.energetico) v += p.team === team ? keep : -keep;
   return v;
 }
 
@@ -193,6 +198,8 @@ export interface Plan {
   move: Pos | null;
   action: PlannedAction | null;
   score: number;
+  /** Toma o energético antes de andar. */
+  drink?: boolean;
 }
 
 /** Valor esperado de uma ação, simulando o resultado (os sorteios viram médias). */
@@ -255,7 +262,9 @@ function actionValue(s: GameState, team: Team, act: PlannedAction): number {
     getPlayer(fail, p.id).unbalanced = true;
     const vFail = evaluate(fail, team);
     const foulV = vFail - (t.fouls[team] >= 4 ? 25 : 6);
-    return o.markWins * vSteal + o.ballWins * vFail + o.foul * foulV + (1 - o.markWins - o.ballWins - o.foul) * evaluate(t, team) - (act.kind === 'carrinho' ? 3 : 0);
+    return (
+      o.markWins * vSteal + o.ballWins * vFail + o.foul * foulV + (1 - o.markWins - o.ballWins - o.foul) * evaluate(t, team) - (act.kind === 'carrinho' ? 3 : 0)
+    );
   }
   if (act.kind === 'muralha') {
     const h = holderOf(s);
@@ -284,9 +293,20 @@ function actionsFor(s: GameState): PlannedAction[] {
 function planFor(s: GameState, id: string, diff: Difficulty): Plan {
   const team = getPlayer(s, id).team;
   let best: Plan = { playerId: id, sprint: false, move: null, action: null, score: -Infinity };
-  for (const sp of [false, true]) {
+  for (const [dr, sp] of [
+    [false, false],
+    [false, true],
+    [true, false],
+  ] as const) {
     const base = clone(s);
     beginActivation(base, id);
+    const me = getPlayer(base, id);
+    // Fôlego recuperado conta a favor (mais lances no Duelo e arrancadas).
+    const refill = dr ? (ROLES[me.role].fol - me.fol) * 0.6 + (ROLES[me.role].hab - me.hab) * 0.4 : 0;
+    if (dr) {
+      if (!canUseDrink(base)) continue;
+      useDrink(base);
+    }
     if (sp) {
       if (!canSprint(base)) continue;
       sprint(base);
@@ -296,12 +316,14 @@ function planFor(s: GameState, id: string, diff: Difficulty): Plan {
       if (sp && !c) continue;
       const t = clone(base);
       if (c) moveTo(t, c.x, c.y);
-      const stay = evaluate(t, team) - (sp ? 1.5 : 0);
+      // Tomar o energético tem custo (perde o bônus guardado), então só vale quando abre jogada.
+      const cost = (sp ? 1.5 : 0) - (dr ? refill : 0);
+      const stay = evaluate(t, team) - cost;
       const noise = () => (diff === 'recruta' ? nextRandom(s) * 6 : nextRandom(s) * 0.5);
-      if (stay + noise() > best.score) best = { playerId: id, sprint: sp, move: c, action: null, score: stay };
+      if (stay + noise() > best.score) best = { playerId: id, sprint: sp, move: c, action: null, score: stay, drink: dr };
       for (const act of actionsFor(t)) {
-        const v = actionValue(t, team, act) - (sp ? 1.5 : 0) + noise();
-        if (v > best.score) best = { playerId: id, sprint: sp, move: c, action: act, score: v };
+        const v = actionValue(t, team, act) - cost + noise();
+        if (v > best.score) best = { playerId: id, sprint: sp, move: c, action: act, score: v, drink: dr };
       }
     }
   }
@@ -326,6 +348,7 @@ export function planActivation(s: GameState, diff: Difficulty = 'veterano'): Pla
 /** Executa uma jogada planejada. Devolve o Duelo aberto (se houver) para quem chamou resolver. */
 export function executePlan(s: GameState, plan: Plan): { duel: DuelState | null; shot: boolean } {
   beginActivation(s, plan.playerId);
+  if (plan.drink && canUseDrink(s)) useDrink(s);
   if (plan.sprint && canSprint(s)) sprint(s);
   if (plan.move) moveTo(s, plan.move.x, plan.move.y);
   const act = plan.action;

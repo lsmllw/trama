@@ -688,6 +688,25 @@ button.big {
   image-rendering: pixelated;
 }
 
+button.drink-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-color: #7dff6a;
+  background: linear-gradient(180deg, #1f4a2a, #183a22);
+  box-shadow: 0 0 10px -2px #7dff6a;
+  animation: drinkGlow 1.4s ease-in-out infinite;
+}
+button.drink-btn img {
+  height: 18px;
+  image-rendering: pixelated;
+}
+@keyframes drinkGlow {
+  50% {
+    box-shadow: 0 0 16px 0 #7dff6a;
+  }
+}
+
 /* ---------- Símbolo da posição ---------- */
 
 .role-badge {

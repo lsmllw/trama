@@ -1,10 +1,10 @@
 // Quadra 2.5D do Trama Futsal: piso de madeira, linhas, gols com rede, torcida, jogadores
 // chibi e a bola. Toda jogada vira uma animação (fila de eventos) antes do jogo seguir.
 
-import { AREA_RADIUS, COURT_H, COURT_W, TEN_METER, getPlayer } from '../core';
+import { AREA_RADIUS, COURT_H, COURT_W, TEN_METER, absRound, getPlayer } from '../core';
 import type { Corner, Emote, GameEvent, GameState, Lance, Player, Pos, SideKey, Team, TempoResult } from '../core';
 import { drawRoleBadge } from './roles';
-import { BALL, playerSprite, whiteSprite } from './sprites';
+import { BALL, drinkSprite, playerSprite, whiteSprite } from './sprites';
 import type { Frame } from './sprites';
 
 type Pt = { x: number; y: number };
@@ -142,6 +142,19 @@ interface Float {
   life?: number;
 }
 
+/** Garrafa de energético na tela. */
+interface Bottle {
+  id: string;
+  x: number;
+  y: number;
+  h: number;
+  rot: number;
+  expires: number;
+  flying: boolean;
+  landed: number;
+  removing: number;
+}
+
 /** Estado do Duelo na quadra: foco da câmera, vinheta e efeitos de início. */
 interface DuelFx {
   a: string;
@@ -205,6 +218,7 @@ export class Renderer {
   }[] = [];
   private cheer = 0;
   private duelFx: DuelFx | null = null;
+  private bottles = new Map<string, Bottle>();
   private flashT = 0;
   /** Quando as casas de movimento atuais apareceram (para a animação de entrada). */
   private movesKey = '';
@@ -221,6 +235,8 @@ export class Renderer {
     this.ctx = canvas.getContext('2d')!;
     this.floor = this.buildFloor();
     for (const p of s.players) this.disp.set(p.id, this.freshDisp(p));
+    for (const d of s.drinks)
+      this.bottles.set(d.id, { id: d.id, x: d.x + 0.5, y: d.y + 0.5, h: 0, rot: 0, expires: d.expires, flying: false, landed: 0, removing: 0 });
     const h = getPlayer(s, s.holder);
     this.ball = {
       x: h.x + 0.5,
@@ -328,6 +344,8 @@ export class Renderer {
       case 'emote':
         this.balloons.push({ id: e.id, emote: e.emote, t0: performance.now() });
         return [];
+      case 'garrafa':
+        return this.animDrink(e);
       case 'texto':
         this.floats.push({
           x: e.x,
@@ -804,6 +822,168 @@ export class Renderer {
         this.ball.owner = holderId;
       },
     };
+  }
+
+  // ---------- Energético ----------
+
+  private animDrink(e: Extract<GameEvent, { kind: 'garrafa' }>): Anim[] {
+    const now = performance.now();
+    const LIME = '#7dff6a';
+    switch (e.acao) {
+      case 'cai': {
+        // A torcida arremessa a garrafa: voa girando por cima da lateral e cai quicando.
+        const d = e.drink;
+        const b: Bottle = { id: d.id, x: e.from.x, y: e.from.y, h: 55, rot: 0, expires: d.expires, flying: true, landed: 0, removing: 0 };
+        this.bottles.set(d.id, b);
+        this.cheer = now - 1200;
+        const to = { x: d.x + 0.5, y: d.y + 0.5 };
+        const from = { ...e.from };
+        return [
+          {
+            dur: 950,
+            t0: 0,
+            step: (t) => {
+              b.x = from.x + (to.x - from.x) * t;
+              b.y = from.y + (to.y - from.y) * t;
+              b.h = 55 * (1 - t) + Math.sin(Math.PI * t) * 85;
+              b.rot = t * Math.PI * 6;
+            },
+            end: () => {
+              b.flying = false;
+              b.h = 0;
+              b.rot = 0;
+              b.landed = performance.now();
+              this.dust(to.x, to.y, 6);
+              this.burst(to.x, to.y, 10, LIME, 7);
+              this.floats.push({ x: to.x, y: to.y, raw: true, h: 30, text: 'ENERGÉTICO!', color: LIME, t0: performance.now(), size: 13, life: 1300 });
+            },
+          },
+        ];
+      }
+      case 'pega': {
+        const b = this.bottles.get(e.drinkId);
+        const pd = this.disp.get(e.playerId);
+        if (b) {
+          this.bottles.delete(e.drinkId);
+          this.burst(b.x, b.y, 12, LIME, 8);
+        }
+        if (pd) {
+          this.floats.push({ x: pd.x, y: pd.y, raw: true, h: 56, text: '+ Energético', color: LIME, t0: now, size: 13, life: 1100 });
+          this.balloons.push({ id: e.playerId, emote: 'estrela', t0: now });
+        }
+        return [];
+      }
+      case 'some': {
+        const b = this.bottles.get(e.drinkId);
+        if (b && !b.removing) {
+          b.removing = now;
+          for (let i = 0; i < 10; i++)
+            this.particles.push({
+              x: b.x,
+              y: b.y,
+              vx: (Math.random() - 0.5) * 1.5,
+              vy: (Math.random() - 0.5) * 1.5,
+              life: 500,
+              t0: now,
+              color: 'rgba(230,240,235,0.85)',
+              size: 2,
+              g: -0.04,
+            });
+        }
+        return [];
+      }
+      case 'volta': {
+        const d = e.drink;
+        this.bottles.set(d.id, { id: d.id, x: d.x + 0.5, y: d.y + 0.5, h: 0, rot: 0, expires: d.expires, flying: false, landed: now, removing: 0 });
+        return [];
+      }
+      case 'usa': {
+        // Toma o energético: brilho verde subindo, um pulinho e "ENERGIA!".
+        const pd = this.disp.get(e.playerId);
+        if (!pd) return [];
+        this.floats.push({ x: pd.x, y: pd.y, raw: true, h: 60, text: 'ENERGIA!', color: '#ffe14d', t0: now, size: 15, life: 1200 });
+        return [
+          {
+            dur: 750,
+            t0: 0,
+            step: (t) => {
+              pd.h = Math.abs(Math.sin(t * Math.PI * 2)) * 7;
+              pd.frame = t < 0.6 ? 'arms' : null;
+              pd.flash = t < 0.2 && Math.floor(t * 40) % 2 === 0;
+              if (Math.random() < 0.6)
+                this.particles.push({
+                  x: pd.x + (Math.random() - 0.5) * 0.6,
+                  y: pd.y + (Math.random() - 0.5) * 0.3,
+                  vx: 0,
+                  vy: 0,
+                  life: 600,
+                  t0: performance.now(),
+                  color: Math.random() < 0.5 ? LIME : '#ffe14d',
+                  size: 2,
+                  g: -0.15,
+                });
+            },
+            end: () => {
+              pd.h = 0;
+              pd.frame = null;
+              pd.flash = false;
+            },
+          },
+        ];
+      }
+    }
+  }
+
+  private drawBottle(s: GameState, b: Bottle, now: number): void {
+    const ctx = this.ctx;
+    let alpha = 1;
+    let scale = 1.5;
+    if (b.removing) {
+      const k = (now - b.removing) / 300;
+      if (k >= 1) {
+        this.bottles.delete(b.id);
+        return;
+      }
+      alpha = 1 - k;
+      scale *= 1 - k * 0.7;
+    } else if (!b.flying && absRound(s) >= b.expires - 1) {
+      // Última rodada na quadra: pisca para avisar que vai sumir.
+      alpha = Math.floor(now / 170) % 2 ? 0.25 : 1;
+    }
+    const g = this.P(b.x, b.y);
+    // Pulinhos ao cair e flutuação leve parada.
+    const sinceLand = b.landed ? now - b.landed : Infinity;
+    const bounce = sinceLand < 600 ? Math.abs(Math.sin((sinceLand / 600) * Math.PI * 2)) * 10 * (1 - sinceLand / 600) : 0;
+    const bob = b.flying ? 0 : 2 + Math.sin(now / 320 + b.x) * 2;
+    const h = b.h + bounce + bob;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    if (!b.flying) {
+      // Aura verde pulsando no piso.
+      const pulse = 0.5 + 0.5 * Math.sin(now / 260);
+      const gl = ctx.createRadialGradient(g.x, g.y, 0, g.x, g.y, 16 + pulse * 4);
+      gl.addColorStop(0, `rgba(125,255,106,${(0.35 + pulse * 0.2).toFixed(3)})`);
+      gl.addColorStop(1, 'rgba(125,255,106,0)');
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = gl;
+      ctx.beginPath();
+      ctx.ellipse(g.x, g.y, 18 + pulse * 4, 9 + pulse * 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      if (Math.random() < 0.04)
+        this.particles.push({ x: b.x + (Math.random() - 0.5) * 0.5, y: b.y, vx: 0, vy: 0, life: 700, t0: now, color: '#d9ffcf', size: 2, g: -0.12 });
+    }
+    ctx.fillStyle = 'rgba(40,20,5,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(g.x, g.y, 5 - Math.min(3, h / 20), 2.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const spr = drinkSprite();
+    const top = this.P(b.x, b.y, h);
+    ctx.translate(top.x, top.y - (spr.height * scale) / 2);
+    ctx.rotate(b.flying ? b.rot : Math.sin(now / 500 + b.y) * 0.12);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(spr, (-spr.width * scale) / 2, (-spr.height * scale) / 2, spr.width * scale, spr.height * scale);
+    ctx.restore();
   }
 
   private dust(x: number, y: number, n: number): void {
@@ -1696,6 +1876,7 @@ export class Renderer {
       depth: depth(this.ballPos().x, this.ballPos().y) + 0.5,
       draw: () => this.drawBall(now),
     });
+    for (const b of this.bottles.values()) items.push({ depth: depth(b.x, b.y) - 0.2, draw: () => this.drawBottle(s, b, now) });
     items.sort((a, b) => a.depth - b.depth);
     // Sombras primeiro.
     for (const p of s.players) {
@@ -1838,6 +2019,11 @@ export class Renderer {
     if (p.ready && s.activeTeam !== p.team) {
       ctx.fillStyle = '#ffe14d';
       ctx.fillText('!', g.x + tw / 2 + 4, top - 1);
+    }
+    if (p.energetico) {
+      // Garrafinha ao lado do nome: tem energético guardado.
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(drinkSprite(), g.x - tw / 2 - 8, top - 13 + Math.sin(now / 300) * 1, 6, 12);
     }
     ctx.restore();
   }

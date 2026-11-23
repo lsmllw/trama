@@ -72,6 +72,8 @@ export interface Player {
   pedalada: boolean;
   muralha: boolean;
   goals: number;
+  /** Guardou uma garrafa de energético (usa quando quiser, numa ativação dele). */
+  energetico: boolean;
 }
 
 export interface Activation {
@@ -83,6 +85,21 @@ export interface Activation {
   sprinted: boolean;
   /** Depois de um drible vencido: ainda pode passar ou chutar (sem andar). */
   bonus: boolean;
+  /** Tomou energético nesta ativação: +2 casas de movimento. */
+  energized: boolean;
+  /** Garrafa pega no caminho deste movimento (volta para a quadra se o movimento for desfeito). */
+  picked: Drink | null;
+}
+
+/** Garrafa de energético jogada pela torcida: fica na quadra algumas rodadas. */
+export interface Drink {
+  id: string;
+  x: number;
+  y: number;
+  /** Rodada (contada desde o início da partida) em que caiu. */
+  born: number;
+  /** Some no começo desta rodada; pisca na rodada anterior. */
+  expires: number;
 }
 
 export type Corner = 'esq' | 'meio' | 'dir';
@@ -90,14 +107,29 @@ export type Corner = 'esq' | 'meio' | 'dir';
 export type GameEvent =
   | { kind: 'move'; id: string; path: Pos[]; withBall: boolean; sprint: boolean }
   | { kind: 'passe'; fromId: string; toId: string; from: Pos; to: Pos; alto: boolean; result: 'ok' | 'cortado' | 'dividida' }
-  | { kind: 'chute'; shooterId: string; from: Pos; corner: Corner; dive: Corner | null; keeperId: string | null; result: 'gol' | 'defesa' | 'bloqueio'; blockerId?: string; team: Team }
+  | {
+      kind: 'chute';
+      shooterId: string;
+      from: Pos;
+      corner: Corner;
+      dive: Corner | null;
+      keeperId: string | null;
+      result: 'gol' | 'defesa' | 'bloqueio';
+      blockerId?: string;
+      team: Team;
+    }
   | { kind: 'duelo'; holderId: string; otherId: string; result: 'passou' | 'roubou' | 'manteve' | 'falta'; to?: Pos }
   | { kind: 'gol'; team: Team; scorerId: string }
   | { kind: 'falta'; at: Pos; byId: string; onId: string; count: number; direto: boolean }
   | { kind: 'reset'; positions: Record<string, Pos>; holderId: string }
   | { kind: 'apito'; text: string; long?: boolean }
   | { kind: 'emote'; id: string; emote: Emote }
-  | { kind: 'texto'; x: number; y: number; text: string; color: string };
+  | { kind: 'texto'; x: number; y: number; text: string; color: string }
+  | { kind: 'garrafa'; acao: 'cai'; drink: Drink; from: { x: number; y: number } }
+  | { kind: 'garrafa'; acao: 'pega'; drinkId: string; playerId: string }
+  | { kind: 'garrafa'; acao: 'some'; drinkId: string }
+  | { kind: 'garrafa'; acao: 'volta'; drink: Drink }
+  | { kind: 'garrafa'; acao: 'usa'; playerId: string };
 
 export type Emote = '!' | '?' | 'suor' | 'coracao' | 'raiva' | 'estrela' | 'musica';
 
@@ -123,6 +155,9 @@ export interface GameState {
   keeperMustPass: string | null;
   /** 6ª falta em diante: este jogador cobra um tiro livre direto do 10 m antes de seguir. */
   pendingDirect: string | null;
+  /** Garrafas de energético na quadra. */
+  drinks: Drink[];
+  drinkSeq: number;
   rng: number;
   events: GameEvent[];
   log: string[];
