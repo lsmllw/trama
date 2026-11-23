@@ -1045,6 +1045,8 @@ export class Renderer {
       this.disp.set(p.id, d);
       d.x += (p.x + 0.5 - d.x) * 0.35;
       d.y += (p.y + 0.5 - d.y) * 0.35;
+      // Parado, todo mundo fica de frente para a câmera (o rosto sempre à mostra); de costas só durante o movimento.
+      d.back = false;
       d.rot *= 0.8;
       if (Math.abs(d.rot) < 0.01) d.rot = 0;
       d.h *= 0.7;
@@ -1959,8 +1961,8 @@ export class Renderer {
     const dim = activeTeamTurn && p.activated && !inDuel;
     // Vista e lado: de frente quando desce na tela, de costas quando sobe.
     const toward = s.holder === p.id ? (p.team === 'azul' ? 'E' : 'W') : p.facing;
-    const facingBack = d.back ?? (toward === 'E' || toward === 'N');
-    const facingLeft = d.flip ?? (toward === 'W' || toward === 'N');
+    const facingBack = d.back ?? false;
+    const facingLeft = d.flip ?? toward === 'W';
     const idleBob = d.frame ? 0 : Math.sin(now / 380 + p.number) > 0.6 ? 1 : 0;
     const frame: Frame = d.frame ?? 'idle';
     const spr = playerSprite(p, frame, facingBack ? 'back' : 'front');
