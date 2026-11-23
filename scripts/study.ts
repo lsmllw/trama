@@ -39,7 +39,7 @@ import {
   useDrink,
   useRead,
 } from '../src/core';
-import type { Corner, DuelState, GameState, Lance, LanceMemory, Plan, PlannedAction, ShotPreview, SideKey, Team } from '../src/core';
+import type { Corner, DuelState, GameState, Lance, LanceMemory, Plan, PlannedAction, ShotPreview, SideKey, Style, Team } from '../src/core';
 // @ts-expect-error tipos do Node não estão instalados neste projeto
 import { writeFileSync } from 'node:fs';
 
@@ -85,6 +85,8 @@ interface Agent {
   plan(s: GameState): Plan | null;
   lance(s: GameState, cs: DuelState, k: SideKey, mem: LanceMemory): Lance;
   corner(s: GameState, pv: ShotPreview): Corner;
+  style?: Style;
+  label?: string;
 }
 
 function agent(name: AgentName): Agent {
@@ -132,8 +134,8 @@ interface DuelRec {
 
 interface GameRec {
   seed: number;
-  azul: AgentName;
-  vermelho: AgentName;
+  azul: string;
+  vermelho: string;
   score: Record<Team, number>;
   winner: string;
   shots: ShotRec[];
@@ -155,13 +157,13 @@ interface GameRec {
 }
 
 function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
-  const s = createGame({ seed });
+  const s = createGame({ seed, styles: { azul: azul.style, vermelho: verm.style } });
   const ag = (t: Team) => (t === 'azul' ? azul : verm);
   const mem: Record<Team, LanceMemory> = { azul: newMemory(), vermelho: newMemory() };
   const rec: GameRec = {
     seed,
-    azul: azul.name,
-    vermelho: verm.name,
+    azul: azul.label ?? azul.name,
+    vermelho: verm.label ?? verm.name,
     score: s.score,
     winner: '',
     shots: [],
@@ -339,6 +341,11 @@ function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
 }
 
 const [aName, bName, nStr, seedStr, out, ablation] = process.argv.slice(2);
+// "veterano:pressao" = agente Veterano jogando no estilo Pressão alta.
+function withStyle(full: string): Agent {
+  const [name, style] = full.split(':');
+  return { ...agent(name as AgentName), style: (style ?? 'equilibrio') as Style, label: full };
+}
 // Variações de regra para testar propostas (sem mexer no jogo).
 if (ablation === 'marcacao') {
   // Ala e pivô marcam com 2 lances (MAR 3) em vez de 1: mais gente capaz de roubar a bola.
@@ -352,8 +359,8 @@ const t0 = Date.now();
 for (let i = 0; i < n; i++) {
   // Metade das partidas com os lados trocados (anula vantagem de lado e de saída).
   const swap = i % 2 === 1;
-  const A = agent((swap ? bName : aName) as AgentName);
-  const B = agent((swap ? aName : bName) as AgentName);
+  const A = withStyle(swap ? bName : aName);
+  const B = withStyle(swap ? aName : bName);
   res.push(playMatch(base + i * 13, A, B));
 }
 writeFileSync(out, JSON.stringify({ a: aName, b: bName, n, ms: Date.now() - t0, games: res }));

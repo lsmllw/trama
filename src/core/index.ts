@@ -3,5 +3,6 @@ export * from './data';
 export * from './court';
 export * from './duelo';
 export * from './game';
+export * from './estilos';
 export * from './ai';
 export * from './rng';

@@ -1,5 +1,7 @@
 // Regras da partida de futsal: posse, movimento, passe, chute, duelos, faltas e tempos.
 
+import { BLOCO_CUT, POSSE_SHORT, PRESSAO_FOL, STYLES } from './estilos';
+import type { Style } from './estilos';
 import {
   CHUTE_BASE,
   COURT_H,
@@ -29,6 +31,7 @@ import {
 import {
   attackGoal,
   center,
+  ownGoal,
   chebyshev,
   dirFromTo,
   dist,
@@ -69,6 +72,47 @@ function formation(team: Team, kicking: boolean): Pos[] {
 export interface NewGameOptions {
   seed?: number;
   firstKick?: Team;
+  styles?: Partial<Record<Team, Style>>;
+}
+
+export function styleOf(s: GameState, team: Team): Style {
+  return s.styles?.[team] ?? 'equilibrio';
+}
+
+/** Quantos jogadores o time da vez ativa nesta fase, pelo estilo e pela posse. */
+function phaseLimits(s: GameState): void {
+  const team = s.activeTeam;
+  const withBall = s.phaseWithBall;
+  const style = styleOf(s, team);
+  s.activationsMax = withBall ? MAX_ACTIVATIONS_ATK : MAX_ACTIVATIONS;
+  if (!withBall && style === 'pressao') s.activationsMax = 4;
+  if (!withBall && style === 'bloco') s.activationsMax = 2;
+  if (withBall && style === 'contra' && s.possStreak[team] > 2) s.activationsMax = 4;
+}
+
+/** Troca o estilo de um time (no intervalo, ou antes da saída de bola). */
+export function setStyle(s: GameState, team: Team, style: Style): void {
+  if (s.styles[team] === style) return;
+  s.styles[team] = style;
+  s.log.push(`${TEAM_NAME[team]} muda para ${STYLES[style].name}.`);
+  // Trocado antes de alguém jogar na fase: os limites já valem agora.
+  if (s.activationsUsed === 0 && !s.activation) phaseLimits(s);
+}
+
+/** Quantos desarmes o time da vez pode tentar nesta fase. */
+export function tacklesMax(s: GameState): number {
+  return styleOf(s, s.activeTeam) === 'pressao' ? 2 : TACKLES_PER_PHASE;
+}
+
+/** Distância da linha do passe em que este defensor corta o rasteiro. */
+export function cutRange(s: GameState, q: Player): number {
+  if (!q.ready) return 1;
+  return styleOf(s, q.team) === 'bloco' ? BLOCO_CUT : 2;
+}
+
+/** Passe alto livre do Contra-ataque disponível para quem tem a bola agora. */
+function counterAltoFree(s: GameState, from: Player): boolean {
+  return s.counterPhase && !s.counterAltoUsed && from.team === s.activeTeam && styleOf(s, from.team) === 'contra';
 }
 
 export function createGame(opts: NewGameOptions = {}): GameState {
@@ -97,6 +141,7 @@ export function createGame(opts: NewGameOptions = {}): GameState {
         goals: 0,
         energetico: false,
         altoRecebido: false,
+        toqueCurto: false,
       });
     });
   }
@@ -122,6 +167,12 @@ export function createGame(opts: NewGameOptions = {}): GameState {
     activationsMax: MAX_ACTIVATIONS,
     tacklesUsed: 0,
     pendingReaction: null,
+    styles: { azul: opts.styles?.azul ?? 'equilibrio', vermelho: opts.styles?.vermelho ?? 'equilibrio' },
+    possStreak: { azul: 0, vermelho: 0 },
+    phaseWithBall: false,
+    counterPhase: false,
+    counterAltoUsed: false,
+    kickoff: false,
     rng: (opts.seed ?? 1) | 0,
     events: [],
     log: [],
@@ -151,6 +202,7 @@ function placeForKickoff(s: GameState, kicking: Team): void {
   for (const d of [...s.drinks]) if (playerAt(s, d.x, d.y)) removeDrink(s, d);
   const piv = teamPlayers(s, kicking).find((p) => p.role === 'pivo')!;
   s.holder = piv.id;
+  s.kickoff = true;
   s.events.push({ kind: 'reset', positions, holderId: piv.id });
   s.log.push(`Saída de bola do ${TEAM_NAME[kicking]}.`);
 }
@@ -161,10 +213,22 @@ function startPhase(s: GameState, team: Team): void {
   s.activeTeam = team;
   s.phase++;
   s.activationsUsed = 0;
-  s.activationsMax = s.holder && holderOf(s).team === team ? MAX_ACTIVATIONS_ATK : MAX_ACTIVATIONS;
+  const withBall = !!s.holder && holderOf(s).team === team;
+  // Quem está sem a bola agora perdeu a sequência de posse (mesmo que tenha sido na fase do outro).
+  if (s.holder) s.possStreak[other(holderOf(s).team)] = 0;
+  const prevStreak = s.possStreak[team];
+  s.possStreak[team] = withBall ? prevStreak + 1 : 0;
+  s.phaseWithBall = withBall;
+  s.counterPhase = withBall && prevStreak === 0 && !s.kickoff;
+  s.counterAltoUsed = false;
+  s.kickoff = false;
+  phaseLimits(s);
   s.tacklesUsed = 0;
   s.pendingReaction = null;
-  for (const p of s.players) p.altoRecebido = false;
+  for (const p of s.players) {
+    p.altoRecebido = false;
+    p.toqueCurto = false;
+  }
   for (const p of teamPlayers(s, team)) {
     const def = ROLES[p.role];
     p.activated = false;
@@ -277,6 +341,8 @@ function finishActivation(s: GameState): void {
   p.activated = true;
   p.ready = false;
   s.activationsUsed++;
+  // Pressão alta: correr atrás da bola cansa.
+  if (!s.phaseWithBall && p.team === s.activeTeam && styleOf(s, p.team) === 'pressao') p.fol = Math.max(0, p.fol - PRESSAO_FOL);
   if (s.keeperMustPass === p.id && s.holder === p.id) keeperTimeout(s, p);
   if (s.keeperMustPass === p.id) s.keeperMustPass = null;
   s.activation = null;
@@ -374,12 +440,22 @@ export function moveRange(s: GameState, p: Player, sprinting = false): number {
   let m = def.mov;
   if (s.holder === p.id) m -= def.dom >= 4 ? 0 : def.dom >= 2 ? 1 : 2;
   if (sprinting) m += SPRINT_BONUS;
+  // Contra-ataque: na fase depois de recuperar a bola, o time inteiro corre +1.
+  if (s.counterPhase && p.team === s.activeTeam && styleOf(s, p.team) === 'contra') m += 1;
   return Math.max(1, m);
 }
 
 /** O jogador com a bola para ao entrar ao lado de um marcador (só sai driblando). */
+/** Contra-ataque: quem não ficou de prontidão está fora de posição na fase da recuperação (não corta nem segura ninguém). */
+export function outOfPosition(s: GameState, q: Player): boolean {
+  if (!s.counterPhase || q.team === s.activeTeam || q.ready || styleOf(s, s.activeTeam) !== 'contra') return false;
+  // O Bloco baixo nunca é pego desarrumado no próprio campo.
+  if (styleOf(s, q.team) === 'bloco' && dist(center(q), ownGoal(q.team)) < COURT_W / 2) return false;
+  return true;
+}
+
 function marked(s: GameState, p: Player, x: number, y: number): boolean {
-  return s.players.some((q) => q.team !== p.team && !q.unbalanced && Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) === 1);
+  return s.players.some((q) => q.team !== p.team && !q.unbalanced && !outOfPosition(s, q) && Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) === 1);
 }
 
 function canStand(s: GameState, p: Player, x: number, y: number): boolean {
@@ -539,20 +615,28 @@ export function passPreview(s: GameState, from: Player, to: Player, alto: boolea
   const pas = ROLES[from.role].pas + (alto ? ALTO_BONUS : 0);
   const d = dist(center(from), center(to));
   if (to.team !== from.team || to.id === from.id || d > pas + 0.01) return { ok: false, result: 'ok', dist: d };
-  const opp = s.players.filter((q) => q.team !== from.team && !q.unbalanced);
+  const opp = s.players.filter((q) => q.team !== from.team && !q.unbalanced && !outOfPosition(s, q));
   const dom = ROLES[to.role].dom;
   if (!alto) {
+    // Posse de bola: no toque curto, só corta quem estiver em cima da linha.
+    const short = styleOf(s, from.team) === 'posse' && d <= POSSE_SHORT + 0.01;
     for (const c of passLine(from, to)) {
+      if (short) {
+        const on = opp.find((q) => q.x === c.x && q.y === c.y && chebyshev(q, to) > 1);
+        if (on) return { ok: true, result: 'cortado', otherId: on.id, dist: d };
+        continue;
+      }
       // Quem está de prontidão antecipa e corta a até 2 casas da linha; os outros, a 1.
       // Colado em quem passa, só corta se estiver em cima da linha (a tabela sai da pressão).
-      const cutter = opp.find((q) => chebyshev(q, c) <= (q.ready ? 2 : 1) && chebyshev(q, to) > 1 && (chebyshev(q, from) > 1 || (q.x === c.x && q.y === c.y)));
+      const cutter = opp.find((q) => chebyshev(q, c) <= cutRange(s, q) && chebyshev(q, to) > 1 && (chebyshev(q, from) > 1 || (q.x === c.x && q.y === c.y)));
       if (cutter) return { ok: true, result: 'cortado', otherId: cutter.id, dist: d };
     }
     const contest = opp.filter((q) => chebyshev(q, to) === 1 && ROLES[q.role].mar > dom).sort((a, b) => ROLES[b.role].mar - ROLES[a.role].mar)[0];
     if (contest) return { ok: true, result: 'dividida', otherId: contest.id, dist: d };
     return { ok: true, result: 'ok', dist: d };
   }
-  // Passe alto: qualquer adversário a até 2 casas disputa a recepção.
+  // Passe alto: qualquer adversário a até 2 casas disputa a recepção (menos no primeiro do Contra-ataque).
+  if (counterAltoFree(s, from)) return { ok: true, result: 'ok', dist: d };
   const contest = opp.filter((q) => chebyshev(q, to) <= 2).sort((a, b) => chebyshev(a, to) - chebyshev(b, to) || ROLES[b.role].mar - ROLES[a.role].mar)[0];
   if (contest) return { ok: true, result: 'dividida', otherId: contest.id, dist: d };
   return { ok: true, result: 'ok', dist: d };
@@ -605,7 +689,11 @@ export function shotPreview(s: GameState, p: Player, bomba = false, direto = fal
   const wide = !direto && Math.abs(g.y - c.y) > Math.abs(g.x - c.x) + 0.5;
   // Distância: +2 até 2 casas, +1 a 3, 0 até 5, −1 até 7, −2 mais longe.
   const near = d <= 2.5 ? 2 : d <= 3.5 ? 1 : d <= 5.5 ? 0 : d <= 7.5 ? -1 : -2;
-  const force = def.fin + (bomba ? 2 : 0) + near - (wide ? 1 : 0);
+  // Posse de bola: o time não treina o chute de fora.
+  const longPosse = !direto && d > 5.5 && styleOf(s, p.team) === 'posse' ? 1 : 0;
+  // ...mas trabalhar a bola abre a defesa: +1 de força por fase seguida com a bola depois da primeira (até +2).
+  const worked = !direto && styleOf(s, p.team) === 'posse' && p.team === s.activeTeam ? Math.min(2, Math.max(0, s.possStreak[p.team] - 1)) : 0;
+  const force = def.fin + (bomba ? 2 : 0) + near - (wide ? 1 : 0) - longPosse + worked;
   const keeper = keeperOf(s, other(p.team));
   const ref = keeper ? ROLES.goleiro.ref + (keeper.muralha ? 2 : 0) : 0;
   let blockerId: string | undefined;
@@ -695,7 +783,7 @@ export function currentTargets(s: GameState): Target[] {
     if (!a.bonus && !p.altoRecebido) {
       for (const q of s.players) if (q.team !== p.team && chebyshev(q, p) === 1) out.push({ kind: 'drible', targetId: q.id });
     }
-  } else if (h.team !== p.team && !a.bonus && s.tacklesUsed < TACKLES_PER_PHASE) {
+  } else if (h.team !== p.team && !a.bonus && s.tacklesUsed < tacklesMax(s)) {
     if (chebyshev(h, p) === 1) out.push({ kind: 'desarme', targetId: h.id });
     else if (p.role === 'fixo' && !p.specialUsed && chebyshev(h, p) === 2) out.push({ kind: 'carrinho', targetId: h.id });
   }
@@ -722,7 +810,10 @@ export function pass(s: GameState, toId: string, alto: boolean): PassOutcome {
   if (!pv.ok) throw new Error('Passe fora do alcance');
   a.acted = true;
   a.bonus = false;
-  if (alto) p.fol = Math.max(0, p.fol - ALTO_COST);
+  if (alto) {
+    if (counterAltoFree(s, p)) s.counterAltoUsed = true;
+    else p.fol = Math.max(0, p.fol - (styleOf(s, p.team) === 'posse' ? 2 : ALTO_COST));
+  }
   if (pv.result === 'cortado') {
     const cutter = getPlayer(s, pv.otherId!);
     cutter.ready = false;
@@ -734,6 +825,7 @@ export function pass(s: GameState, toId: string, alto: boolean): PassOutcome {
   }
   s.holder = to.id;
   if (alto) to.altoRecebido = true;
+  if (!alto && pv.result === 'ok' && styleOf(s, p.team) === 'posse' && pv.dist <= POSSE_SHORT + 0.01) to.toqueCurto = true;
   s.events.push({ kind: 'passe', fromId: p.id, toId: to.id, from: { x: p.x, y: p.y }, to: { x: to.x, y: to.y }, alto, result: pv.result });
   p.facing = dirFromTo(p, to);
   if (pv.result === 'dividida') {
@@ -852,7 +944,7 @@ export function startTackle(s: GameState, targetId: string, carrinho = false): D
       p.y = step.y;
     }
   } else if (d !== 1) throw new Error('Precisa estar colado em quem tem a bola');
-  if (s.tacklesUsed >= TACKLES_PER_PHASE) throw new Error('O time já tentou o desarme desta fase');
+  if (s.tacklesUsed >= tacklesMax(s)) throw new Error('O time já tentou o desarme desta fase');
   s.tacklesUsed++;
   a.acted = true;
   p.facing = dirFromTo(p, t);

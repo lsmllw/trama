@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   absRound,
+  cutRange,
+  moveRange,
+  setStyle,
+  tacklesMax,
   activatable,
   diffLances,
   startReaction,
@@ -461,5 +465,93 @@ describe('energético', () => {
     expect(dudu.energetico).toBe(false);
     expect(destinations(s).length).toBeGreaterThan(before);
     expect(range).toBeGreaterThan(0);
+  });
+});
+
+describe('estilos de jogo', () => {
+  it('Pressão alta: sem a bola ativa 4, desarma 2 vezes e cansa mais', () => {
+    const s = createGame({ seed: 1, styles: { vermelho: 'pressao' } });
+    endPhase(s);
+    expect(s.activationsMax).toBe(4);
+    expect(tacklesMax(s)).toBe(2);
+    const p = activatable(s)[0];
+    const fol = p.fol;
+    beginActivation(s, p.id);
+    endActivation(s);
+    expect(p.fol).toBe(fol - 2);
+  });
+  it('Bloco baixo: sem a bola ativa só 2, mas a prontidão corta a 3 casas', () => {
+    const s = createGame({ seed: 1, styles: { vermelho: 'bloco' } });
+    endPhase(s);
+    expect(s.activationsMax).toBe(2);
+    const lelo = byName(s, 'Lelo');
+    lelo.ready = true;
+    expect(cutRange(s, lelo)).toBe(3);
+    const s2 = createGame({ seed: 1 });
+    const lelo2 = byName(s2, 'Lelo');
+    lelo2.ready = true;
+    expect(cutRange(s2, lelo2)).toBe(2);
+  });
+  it('Posse de bola: toque curto só é cortado por quem está em cima da linha', () => {
+    for (const style of ['equilibrio', 'posse'] as const) {
+      const s = createGame({ seed: 1, styles: { azul: style } });
+      clearCourt(s);
+      const ala = byName(s, 'Dudu');
+      const teco = byName(s, 'Teco');
+      const lelo = byName(s, 'Lelo');
+      ala.x = 6;
+      ala.y = 5;
+      teco.x = 9;
+      teco.y = 5;
+      lelo.x = 7;
+      lelo.y = 7;
+      lelo.ready = true;
+      s.holder = ala.id;
+      expect(passPreview(s, ala, teco, false).result).toBe(style === 'posse' ? 'ok' : 'cortado');
+      lelo.x = 7;
+      lelo.y = 5;
+      expect(passPreview(s, ala, teco, false).result).toBe('cortado');
+    }
+  });
+  it('Contra-ataque: depois de recuperar a bola, corre +1 e o 1º passe alto é livre; posse longa ativa só 4', () => {
+    const s = createGame({ seed: 1, styles: { azul: 'contra' } });
+    const dudu = byName(s, 'Dudu');
+    expect(s.counterPhase).toBe(false); // saída de bola não é recuperação
+    s.holder = byName(s, 'Bigode').id;
+    endPhase(s);
+    s.holder = dudu.id; // roubou na fase do Vermelho
+    endPhase(s);
+    expect(s.counterPhase).toBe(true);
+    expect(moveRange(s, byName(s, 'Teco'))).toBe(6); // ala: MOV 5 + 1
+    clearCourt(s);
+    const piv = byName(s, 'Marreta');
+    dudu.x = 6;
+    dudu.y = 5;
+    piv.x = 11;
+    piv.y = 5;
+    const tonhao = byName(s, 'Tonhão');
+    tonhao.x = 12;
+    tonhao.y = 6;
+    expect(passPreview(s, dudu, piv, true).result).toBe('ok');
+    beginActivation(s, dudu.id);
+    const fol = dudu.fol;
+    pass(s, piv.id, true);
+    expect(dudu.fol).toBe(fol);
+    expect(passPreview(s, dudu, piv, true).result).toBe('dividida'); // só o primeiro é livre
+    // Três fases seguidas com a bola: o time ativa só 4.
+    const s2 = createGame({ seed: 1, styles: { azul: 'contra' } });
+    endPhase(s2);
+    endPhase(s2);
+    expect(s2.activationsMax).toBe(5);
+    endPhase(s2);
+    endPhase(s2);
+    expect(s2.activationsMax).toBe(4);
+  });
+  it('troca de estilo no começo da fase já muda os limites', () => {
+    const s = createGame({ seed: 1 });
+    endPhase(s);
+    expect(s.activationsMax).toBe(3);
+    setStyle(s, 'vermelho', 'bloco');
+    expect(s.activationsMax).toBe(2);
   });
 });

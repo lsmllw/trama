@@ -28,5 +28,5 @@ showSetup(root, null, start);
   get view() {
     return view;
   },
-  quickStart: (seed = 42) => start({ difficulty: 'veterano', seed }),
+  quickStart: (seed = 42) => start({ difficulty: 'veterano', style: 'equilibrio', seed }),
 };

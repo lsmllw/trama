@@ -47,6 +47,13 @@ npm run sim -- 200 veterano   # partidas IA × IA, com estatísticas
 - **Faltas:** a partir da 4ª do time no tempo, tiro livre direto do 10 m, sem barreira — esse ainda é no palpite: você escolhe o canto e o goleiro, o lado.
 - **Energético:** de vez em quando a torcida joga uma garrafa numa casa livre. Quem passa por ela guarda (uma por jogador) e toma quando quiser na vez dele (**G**): fôlego e HAB cheios e +2 casas de movimento, sem gastar a ação. A garrafa fica 3 rodadas e pisca na última antes de sumir.
 - **4 segundos:** o goleiro com a bola precisa soltá-la na fase seguinte.
+- **Plano de jogo:** antes da partida cada time escolhe um estilo, às cegas; os dois aparecem no apito inicial e podem ser trocados no intervalo.
+  - **Pressão alta:** sem a bola ativa 4 e desarma 2 vezes por fase; quem joga sem a bola gasta 2 de fôlego a mais e só 1 fica de prontidão.
+  - **Posse de bola:** toque curto (até 3 casas) só é cortado por quem está em cima da linha e não sofre bote com bônus; cada fase seguida com a bola dá +1 de força no chute (até +2). Passe alto custa 2 de fôlego e chute de longe perde 1 de força.
+  - **Bloco baixo:** sem a bola ativa só 2, mas a prontidão corta a 3 casas e o bote no próprio campo ganha +1; no próprio campo nunca é pego fora de posição.
+  - **Contra-ataque:** na fase depois de recuperar a bola, quem não estava de prontidão do outro lado fica fora de posição (não corta passe nem segura quem tem a bola), todos andam +1 e o 1º passe alto é livre; com a bola por mais de 2 fases seguidas, ativa só 4.
+  - **Equilíbrio:** sem vantagem nem fraqueza de estilo.
+  - Ciclo pretendido: Pressão > Posse > Bloco > Contra > Pressão. `npx tsx scripts/study.ts veterano:pressao veterano:posse 40 1 saida.json` mede um confronto.
 - **Dificuldade:** Recruta joga o óbvio; Veterano pesa riscos e guarda prontidão; Craque testa as jogadas até o fim da fase e lê seus hábitos nos Duelos.
 
 ## Controles

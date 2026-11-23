@@ -1,3 +1,4 @@
+import type { Style } from './estilos';
 // Tipos do Trama Futsal.
 
 export type Team = 'azul' | 'vermelho';
@@ -67,6 +68,8 @@ export interface Player {
   ready: boolean;
   /** Recebeu passe alto nesta fase: não chuta nem dribla até a próxima. */
   altoRecebido: boolean;
+  /** Recebeu um toque curto da Posse de bola nesta fase: o bote de prontidão não ganha bônus contra ele. */
+  toqueCurto: boolean;
   /** Perdeu um duelo: sem zona de corte até a próxima fase do seu time. */
   unbalanced: boolean;
   /** Especial da posição já usado neste tempo. */
@@ -170,6 +173,18 @@ export interface GameState {
   tacklesUsed: number;
   /** Bote automático de um defensor de prontidão, esperando o Duelo (quem chama resolve com startReaction). */
   pendingReaction: string | null;
+  /** Estilo de jogo de cada time. */
+  styles: Record<Team, Style>;
+  /** Fases seguidas que cada time começou com a bola. */
+  possStreak: Record<Team, number>;
+  /** O time da vez começou a fase com a bola (fase de ataque). */
+  phaseWithBall: boolean;
+  /** Fase logo depois de recuperar a bola (vale para o Contra-ataque). */
+  counterPhase: boolean;
+  /** O passe alto livre do Contra-ataque já foi usado nesta fase. */
+  counterAltoUsed: boolean;
+  /** A próxima fase começa numa saída de bola (não conta como recuperação). */
+  kickoff: boolean;
   /** Garrafas de energético na quadra. */
   drinks: Drink[];
   drinkSeq: number;

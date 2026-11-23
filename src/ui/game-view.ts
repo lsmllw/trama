@@ -2,6 +2,11 @@
 
 import {
   activatable,
+  chooseStyle,
+  cutRange,
+  setStyle,
+  STYLE_LIST,
+  STYLES,
   activationsLeft,
   duelOdds,
   executeAction,
@@ -51,7 +56,7 @@ import {
   useSpecial,
   useDrink,
 } from '../core';
-import type { Corner, Difficulty, DuelState, GameState, LanceMemory, Player, Pos, Target, Team } from '../core';
+import type { Corner, Difficulty, DuelState, GameState, LanceMemory, Player, Pos, Style, Target, Team } from '../core';
 import { clear, h } from './dom';
 import { runInlineDuel } from './duel-inline';
 import { emptyHighlights, Renderer } from './renderer';
@@ -63,6 +68,7 @@ import { hideTip, showPlayerTip } from './tooltip';
 
 export interface MatchConfig {
   difficulty: Difficulty;
+  style: Style;
   seed: number;
 }
 
@@ -89,6 +95,7 @@ export class GameView {
   private ended = false;
   private inDuel = false;
   private tipTimer = 0;
+  private halftimeDone = false;
   private el = {
     top: h('div', { class: 'scoreboard' }),
     canvas: h('canvas', { class: 'board' }),
@@ -103,7 +110,11 @@ export class GameView {
     private config: MatchConfig,
     private onExit: (rematch: boolean) => void,
   ) {
-    this.s = createGame({ seed: config.seed });
+    this.s = createGame({ seed: config.seed, styles: { azul: config.style ?? 'equilibrio' } });
+    // A IA escolhe o plano dela às cegas; os dois são revelados no apito inicial.
+    this.s.styles[AI] = chooseStyle(this.s, AI, config.difficulty);
+    this.s.log.push(`Planos de jogo: Azul em ${STYLES[this.s.styles.azul].name} × Vermelho em ${STYLES[this.s.styles.vermelho].name}.`);
+    this.s.events.push({ kind: 'apito', text: `${STYLES[this.s.styles.azul].name} × ${STYLES[this.s.styles.vermelho].name}` });
   }
 
   get state(): GameState {
@@ -215,6 +226,10 @@ export class GameView {
     if (this.s.over) {
       this.showEnd();
       return;
+    }
+    if (this.s.half === 2 && !this.halftimeDone) {
+      this.halftimeDone = true;
+      await this.halftime();
     }
     if (!this.busy && this.s.activeTeam === AI) void this.runAiPhase();
   }
@@ -660,7 +675,7 @@ export class GameView {
         for (const q of s.players) {
           if (q.team === PLAYER || q.unbalanced || this.mode === 'alto') continue;
           // De prontidão, o defensor corta a 2 casas da linha.
-          const r = q.ready ? 2 : 1;
+          const r = cutRange(s, q);
           for (let dx = -r; dx <= r; dx++)
             for (let dy = -r; dy <= r; dy++)
               if (q.x + dx >= 0 && q.y + dy >= 0 && q.x + dx < s.width && q.y + dy < s.height) hl.cutZones.push({ x: q.x + dx, y: q.y + dy });
@@ -873,10 +888,14 @@ export class GameView {
         dots,
       );
     };
+    const styleTag = (t: Team) => {
+      const d = STYLES[s.styles[t]];
+      return h('div', { class: 'style-tag', title: `${d.name}\n+ ${d.plus}\n− ${d.minus}` }, d.name);
+    };
     const turn = s.over ? 'Fim de jogo' : s.activeTeam === PLAYER ? 'Sua vez' : 'Vez do Vermelho (IA)';
     clear(this.el.top);
     this.el.top.append(
-      h('div', { class: 'team-score azul' }, h('div', { class: 'tname' }, 'AZUL'), fouls('azul')),
+      h('div', { class: 'team-score azul' }, h('div', { class: 'tname' }, 'AZUL'), styleTag('azul'), fouls('azul')),
       h(
         'div',
         { class: 'score-mid' },
@@ -890,7 +909,7 @@ export class GameView {
         h('div', { class: 'clock' }, `${s.half}º tempo · Rodada ${Math.min(s.round, ROUNDS_PER_HALF)}/${ROUNDS_PER_HALF}`),
         h('div', { class: `turn ${s.over ? '' : s.activeTeam}` }, turn),
       ),
-      h('div', { class: 'team-score vermelho' }, h('div', { class: 'tname' }, 'VERMELHO'), fouls('vermelho')),
+      h('div', { class: 'team-score vermelho' }, h('div', { class: 'tname' }, 'VERMELHO'), styleTag('vermelho'), fouls('vermelho')),
     );
   }
 
@@ -1025,6 +1044,9 @@ export class GameView {
       ),
       h('div', { class: 'sub' }, `Fôlego ${p.fol}/${def.fol}${p.fol < 2 ? ' (cansado: −1 lance)' : ''} · HAB ${p.hab}/${def.hab} · ${ctx}`),
       h('div', { class: 'notice' }, status),
+      s.counterPhase && s.styles[PLAYER] === 'contra'
+        ? h('div', { class: 'notice' }, `Contra-ataque! Todos andam +1 casa${s.counterAltoUsed ? '' : ' e o 1º passe alto é livre'}.`)
+        : null,
       h(
         'div',
         { class: 'btns' },
@@ -1127,6 +1149,79 @@ export class GameView {
         .reverse()
         .map((l) => h('div', {}, l)),
     );
+  }
+
+  /** Intervalo: cada time pode trocar o estilo, já sabendo o placar e o plano do outro. */
+  private halftime(): Promise<void> {
+    const s = this.s;
+    const ai = chooseStyle(s, AI, this.config.difficulty, true);
+    return new Promise((resolve) => {
+      const bg = h('div', { class: 'modal-bg' });
+      let pick: Style = s.styles[PLAYER];
+      const theirs = s.styles[AI];
+      const close = () => {
+        bg.remove();
+        document.removeEventListener('keydown', onKey);
+        setStyle(s, PLAYER, pick);
+        setStyle(s, AI, ai);
+        if (ai !== theirs) s.events.push({ kind: 'apito', text: `Vermelho muda para ${STYLES[ai].name}` });
+        this.renderPanels();
+        resolve();
+      };
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          close();
+        }
+      };
+      document.addEventListener('keydown', onKey);
+      const render = () => {
+        clear(bg);
+        bg.append(
+          h(
+            'div',
+            { class: 'modal halftime' },
+            h('h2', {}, 'Intervalo'),
+            h(
+              'div',
+              { class: 'final' },
+              h('b', { class: 'azul' }, `Azul ${s.score.azul}`),
+              ' × ',
+              h('b', { class: 'vermelho' }, `${s.score.vermelho} Vermelho`),
+            ),
+            h(
+              'p',
+              { class: 'sub' },
+              `O Vermelho jogou o 1º tempo em ${STYLES[theirs].name}.`,
+              STYLES[theirs].losesTo ? ` Quem leva vantagem contra ele: ${STYLES[STYLES[theirs].losesTo!].name}.` : ' Ele está fora do ciclo.',
+              ' A IA também pode trocar o dela.',
+            ),
+            h(
+              'div',
+              { class: 'style-grid small' },
+              STYLE_LIST.map((st) =>
+                h(
+                  'button',
+                  {
+                    class: `style-card ${pick === st ? 'on' : ''}`,
+                    onclick: () => {
+                      pick = st;
+                      render();
+                    },
+                  },
+                  h('b', {}, STYLES[st].name),
+                  h('div', { class: 'plus' }, '+ ', STYLES[st].plus),
+                  h('div', { class: 'minus' }, '− ', STYLES[st].minus),
+                ),
+              ),
+            ),
+            h('div', { class: 'lance-buttons' }, h('button', { class: 'primary', onclick: close }, 'Começar o 2º tempo (Enter)')),
+          ),
+        );
+      };
+      render();
+      document.body.append(bg);
+    });
   }
 
   private showEnd(): void {

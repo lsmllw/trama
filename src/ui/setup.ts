@@ -1,7 +1,7 @@
 // Tela inicial: os dois elencos, as posições e a dificuldade.
 
-import { createGame, ROLES, WEIGHT_LABEL } from '../core';
-import type { Difficulty, GameState, Player, Role } from '../core';
+import { createGame, ROLES, STYLE_LIST, STYLES, WEIGHT_LABEL } from '../core';
+import type { Difficulty, GameState, Player, Role, Style } from '../core';
 import { clear, h } from './dom';
 import type { MatchConfig } from './game-view';
 import { roleBadge } from './roles';
@@ -31,12 +31,13 @@ function playerRow(s: GameState, p: Player): HTMLElement {
 
 export function showSetup(root: HTMLElement, previous: MatchConfig | null, onStart: (c: MatchConfig) => void): void {
   let difficulty: Difficulty = previous?.difficulty ?? 'veterano';
+  let style: Style = previous?.style ?? 'equilibrio';
   const demo = createGame({ seed: 1 });
 
   const start = () => {
     hideTip();
     document.removeEventListener('keydown', onKey);
-    onStart({ difficulty, seed: Math.floor(Math.random() * 2 ** 31) });
+    onStart({ difficulty, style, seed: Math.floor(Math.random() * 2 ** 31) });
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -141,6 +142,36 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
               'De vez em quando a torcida joga uma garrafa de energético na quadra. Quem passar por ela guarda e toma quando quiser (G): fôlego e HAB cheios e +2 casas. A garrafa fica 3 rodadas e pisca na última.',
             ),
           ),
+        ),
+        h('h3', {}, 'Plano de jogo'),
+        h(
+          'p',
+          { class: 'lead small' },
+          'Escolha o estilo do Azul. A IA escolhe o dela ao mesmo tempo, sem ver o seu; os dois aparecem no apito inicial, e no intervalo dá para trocar.',
+        ),
+        h(
+          'div',
+          { class: 'style-grid' },
+          STYLE_LIST.map((st) => {
+            const d = STYLES[st];
+            return h(
+              'button',
+              {
+                class: `style-card ${style === st ? 'on' : ''}`,
+                onclick: () => {
+                  style = st;
+                  render();
+                },
+              },
+              h('b', {}, d.name),
+              h('div', { class: 'meta' }, d.blurb),
+              h('div', { class: 'plus' }, '+ ', d.plus),
+              h('div', { class: 'minus' }, '− ', d.minus),
+              d.beats
+                ? h('div', { class: 'cycle' }, `Leva vantagem contra ${STYLES[d.beats].name} · sofre contra ${STYLES[d.losesTo!].name}`)
+                : h('div', { class: 'cycle' }, 'Fora do ciclo'),
+            );
+          }),
         ),
         h(
           'div',

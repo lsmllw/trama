@@ -33,6 +33,8 @@ import {
 } from './game';
 import type { ShotOutcome, ShotPreview } from './game';
 import { nextRandom } from './rng';
+import { STYLE_LIST, STYLES } from './estilos';
+import type { Style } from './estilos';
 import type { Corner, GameState, Player, Pos, Team } from './types';
 
 export type Difficulty = 'recruta' | 'veterano' | 'craque';
@@ -123,7 +125,7 @@ export function duelLances(s: GameState, ball: Player, mark: Player, _markInitia
   const rb = ROLES[ball.role];
   const rm = ROLES[mark.role];
   let lb = diffLances(rb.dom, rm.mar) - (markers(s, ball).length >= 3 ? 1 : 0) - (ball.fol < 2 ? 1 : 0) + (ball.pedalada ? 0.7 : 0);
-  let lm = diffLances(rm.mar, rb.dom) + (mark.ready ? 1 : 0) - (mark.fol < 2 ? 1 : 0) + extra;
+  let lm = diffLances(rm.mar, rb.dom) + (mark.ready && !ball.toqueCurto ? 1 : 0) - (mark.fol < 2 ? 1 : 0) + extra;
   lb = Math.max(1, Math.min(3.7, lb));
   lm = Math.max(1, Math.min(3, lm));
   return { lb, lm };
@@ -388,16 +390,55 @@ function planFor(s: GameState, id: string, diff: Difficulty): Plan {
       const risk = (v: number) => (1 - q) * v + q * vLose;
       // Tomar o energético tem custo (perde o bônus guardado), então só vale quando abre jogada.
       const cost = (sp ? 1.5 : 0) - (dr ? refill : 0);
-      const stay = risk(evaluate(t, team)) - cost;
+      const stay = risk(evaluate(t, team)) - cost + styleBias(s, t, id, null);
       const noise = () => (diff === 'recruta' ? nextRandom(s) * 6 : diff === 'craque' ? nextRandom(s) * 0.1 : nextRandom(s) * 0.5);
       if (stay + noise() > best.score) best = { playerId: id, sprint: sp, move: c, action: null, score: stay, drink: dr };
       for (const act of actionsFor(t)) {
-        const v = risk(actionValue(t, team, act)) - cost + noise();
+        const v = risk(actionValue(t, team, act)) - cost + styleBias(s, t, id, act) + noise();
         if (v > best.score) best = { playerId: id, sprint: sp, move: c, action: act, score: v, drink: dr };
       }
     }
   }
   return best;
+}
+
+/** O jeito de jogar de cada estilo: pequenas preferências que a avaliação geral não enxerga. */
+function styleBias(s0: GameState, t: GameState, id: string, act: PlannedAction | null): number {
+  const me = getPlayer(t, id);
+  const team = me.team;
+  const style = t.styles[team];
+  const h = holderOf(t);
+  const attacking = holderOf(s0).team === team;
+  let v = 0;
+  switch (style) {
+    case 'posse':
+      // Toque curto e paciência; nada de chutão nem de chute de longe.
+      if (act?.kind === 'passe') {
+        const q = getPlayer(t, act.toId);
+        const d = dist(center(me), center(q));
+        v += act.alto ? -1.2 : d <= 3.01 ? 0.8 : 0;
+      }
+      if (act?.kind === 'chute' && distToGoal(me, team) > 5.5) v -= 1.5;
+      if (attacking && me.id !== h.id && dist(me, h) <= 3) v += 0.4; // opção de passe perto
+      break;
+    case 'pressao':
+      // Sem a bola, vai em cima de quem tem a bola.
+      if (!attacking && h.team !== team) v += Math.max(0, 3 - Math.max(Math.abs(me.x - h.x), Math.abs(me.y - h.y))) * 0.5;
+      break;
+    case 'bloco':
+      // Sem a bola, não passa do meio da quadra e fica entre a bola e o gol.
+      if (!attacking) {
+        const own = dist(center(me), ownGoal(team));
+        if (own > COURT_W / 2) v -= (own - COURT_W / 2) * 0.4;
+      }
+      break;
+    case 'contra':
+      // Recuperou: acelera para o gol; sem a bola, deixa alguém adiantado para o contragolpe.
+      if (attacking && t.counterPhase && act && (act.kind === 'passe' || act.kind === 'chute')) v += 0.6;
+      if (!attacking && me.role !== 'goleiro' && distToGoal(me, team) < COURT_W / 2) v += 0.3;
+      break;
+  }
+  return v;
 }
 
 /** Quanto vale deixar este jogador de prontidão para a fase do adversário (ele deixa de valer isso se agir agora). */
@@ -409,6 +450,20 @@ function readyValue(s: GameState, p: Player): number {
   // Perto de quem tem a bola, ou entre ela e o nosso gol, a prontidão vira bote ou corte.
   const between = dist(center(p), ownGoal(p.team)) < toGoal;
   return (d <= 2 ? 5 : d <= 4 ? 3 : 1) + (between ? 1.5 : 0);
+}
+
+/** Estilo da IA antes da partida (às cegas) ou no intervalo (vendo o do adversário e o placar). */
+export function chooseStyle(s: GameState, team: Team, diff: Difficulty, halftime = false): Style {
+  const mine = s.styles[team];
+  if (!halftime) return STYLE_LIST[Math.floor(nextRandom(s) * STYLE_LIST.length)];
+  const theirs = s.styles[other(team)];
+  const counter = STYLES[theirs].losesTo;
+  const lead = s.score[team] - s.score[other(team)];
+  if (diff === 'recruta' || !counter) return mine;
+  // Veterano só muda se não estiver ganhando; Craque muda sempre que não tiver folga.
+  if (diff === 'veterano' && lead > 0) return mine;
+  if (diff === 'craque' && lead >= 2) return mine;
+  return counter;
 }
 
 /** Jogada "óbvia": vai para o gol, passa para frente, persegue a bola. É o nível Recruta. */

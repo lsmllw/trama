@@ -3,7 +3,7 @@
 // e quem terminar com mais vantagem fica com a bola.
 
 import { LANCE_FOL, MAX_LANCES, ROLES, TEMPOS, TIRED_FOL, WEIGHT_RANK } from './data';
-import { approachSide, chebyshev, getPlayer } from './court';
+import { approachSide, attackGoal, chebyshev, dist, getPlayer, ownGoal } from './court';
 import type { GameState, Player, Weight } from './types';
 
 export type Lance = 'golpe' | 'guarda' | 'finta' | 'esperar';
@@ -100,9 +100,17 @@ export function startDuel(s: GameState, kind: DuelKind, initiatorId: string, tar
     let n = diffLances(attr, vs);
     const notes = [`${withBall ? 'Domínio' : 'Marcação'} ${attr} contra ${withBall ? 'Marcação' : 'Domínio'} ${vs}: ${n} lance${n > 1 ? 's' : ''}`];
     let reads = 0;
-    if ((k === 'def' || kind === 'bote') && p.ready) {
+    // Posse de bola: quem acabou de receber o toque curto já sai jogando, e o bote não pega de surpresa.
+    const oneTouch = kind === 'bote' && k === 'atk' && q.toqueCurto;
+    if (oneTouch) notes.push('Toque curto: bote sem bônus');
+    if ((k === 'def' || kind === 'bote') && p.ready && !oneTouch) {
       n += 1;
       notes.push(kind === 'bote' && k === 'atk' ? 'Bote de prontidão +1' : 'Prontidão +1');
+    }
+    // Bloco baixo: o bote de prontidão dentro do próprio campo vem mais forte.
+    if (kind === 'bote' && k === 'atk' && p.ready && !oneTouch && s.styles?.[p.team] === 'bloco' && dist(p, ownGoal(p.team)) < dist(p, attackGoal(p.team))) {
+      n += 1;
+      notes.push('Bloco baixo +1');
     }
     if (kind === 'carrinho' && k === 'atk') {
       n += 1;
