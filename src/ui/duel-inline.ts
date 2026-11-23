@@ -24,6 +24,7 @@ const KIND_TITLE: Record<DuelState['kind'], string> = {
   desarme: 'DESARME!',
   carrinho: 'CARRINHO!',
   dividida: 'DIVIDIDA!',
+  bote: 'BOTE DE PRONTIDÃO!',
 };
 
 const ICON: Record<Lance, string> = { golpe: '⚡', guarda: '🛡', finta: '🌀', esperar: '⏳' };

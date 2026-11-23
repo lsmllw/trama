@@ -5,9 +5,22 @@ import type { Look, Role, RoleDef, Team, Weight } from './types';
 export const COURT_W = 20;
 export const COURT_H = 10;
 /** Rodadas por tempo (cada rodada = uma fase de cada time). */
-export const ROUNDS_PER_HALF = 8;
+export const ROUNDS_PER_HALF = 6;
 /** A partir desta falta acumulada no tempo, tiro livre direto do 10 m (2º ponto penal). */
-export const FOUL_LIMIT = 6;
+export const FOUL_LIMIT = 4;
+/** Jogadores que agem por fase (time sem a bola); os outros ficam de prontidão. */
+export const MAX_ACTIVATIONS = 3;
+/** Com a bola no começo da fase, o time age com os 5. */
+export const MAX_ACTIVATIONS_ATK = 5;
+/** Desarmes (ou carrinhos) que o time pode tentar na própria fase. O bote de prontidão não conta. */
+export const TACKLES_PER_PHASE = 1;
+/** Passe alto: alcance PAS + isto (e custa fôlego). */
+export const ALTO_BONUS = 1;
+export const ALTO_COST = 1;
+/** Abaixo deste fôlego, o jogador perde 1 lance no Duelo. */
+export const TIRED_FOL = 2;
+/** Chance de rebote quando o goleiro defende um chute forte. */
+export const REBOUND_CHANCE = 0.4;
 /** Distância do 2º ponto penal ao gol, em casas (10 m). */
 export const TEN_METER = 5;
 /** Raio da área do goleiro, em casas a partir do centro do gol. */
@@ -15,9 +28,11 @@ export const AREA_RADIUS = 3.2;
 /** O chute alcança até CHUTE_BASE + FIN casas do gol. */
 export const CHUTE_BASE = 4;
 
-export const SPRINT_COST = 2;
+export const SPRINT_COST = 3;
 export const SPRINT_BONUS = 2;
-export const FOL_REGEN = 3;
+/** Fôlego recuperado no começo da fase: quem descansou (ficou de prontidão) recupera mais. */
+export const FOL_REGEN = 2;
+export const FOL_REST = 4;
 export const HAB_REGEN = 1;
 
 export const TEMPOS = 3;
@@ -70,7 +85,7 @@ export const ROLES: Record<Role, RoleDef> = {
     dom: 5,
     hab: 6,
     fin: 3,
-    mar: 2,
+    mar: 3,
     fol: 10,
     ref: 0,
     special: 'Pedalada',
@@ -86,7 +101,7 @@ export const ROLES: Record<Role, RoleDef> = {
     dom: 4,
     hab: 2,
     fin: 5,
-    mar: 2,
+    mar: 3,
     fol: 10,
     ref: 0,
     special: 'Bomba',

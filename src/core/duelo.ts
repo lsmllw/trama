@@ -2,7 +2,7 @@
 // Mesmos lances e mesma regra de quem vence quem; cada tempo vencido dá vantagem,
 // e quem terminar com mais vantagem fica com a bola.
 
-import { LANCE_FOL, MAX_LANCES, ROLES, TEMPOS, WEIGHT_RANK } from './data';
+import { LANCE_FOL, MAX_LANCES, ROLES, TEMPOS, TIRED_FOL, WEIGHT_RANK } from './data';
 import { approachSide, chebyshev, getPlayer } from './court';
 import type { GameState, Player, Weight } from './types';
 
@@ -37,7 +37,8 @@ export interface TempoResult {
   text: string;
 }
 
-export type DuelKind = 'drible' | 'desarme' | 'carrinho' | 'dividida';
+/** `bote` = bote automático de um defensor de prontidão, na fase do adversário. */
+export type DuelKind = 'drible' | 'desarme' | 'carrinho' | 'dividida' | 'bote';
 
 export interface DuelState {
   kind: DuelKind;
@@ -75,6 +76,15 @@ export function markers(s: GameState, p: Player): Player[] {
 /** Lances pelo atributo (Domínio com a bola, Marcação sem ela): 5 → 3, 3–4 → 2, 1–2 → 1. */
 export const attrLances = (v: number): number => (v >= 5 ? 3 : v >= 3 ? 2 : 1);
 
+/**
+ * Lances pela diferença entre o meu atributo e o do outro (Domínio de quem tem a bola contra a
+ * Marcação de quem marca): 2 ou mais acima → 3; até 1 de diferença → 2; 2 ou mais abaixo → 1.
+ */
+export const diffLances = (mine: number, theirs: number): number => {
+  const d = mine - theirs;
+  return d >= 2 ? 3 : d >= -1 ? 2 : 1;
+};
+
 export function startDuel(s: GameState, kind: DuelKind, initiatorId: string, targetId: string): DuelState {
   const a = getPlayer(s, initiatorId);
   const d = getPlayer(s, targetId);
@@ -82,23 +92,29 @@ export function startDuel(s: GameState, kind: DuelKind, initiatorId: string, tar
   const side = approachSide(d, a);
   const sides = (['atk', 'def'] as const).map((k) => {
     const p = k === 'atk' ? a : d;
-    // Com a bola, os lances vêm do Domínio; sem ela, da Marcação.
+    const q = k === 'atk' ? d : a;
+    // Com a bola, os lances vêm do Domínio contra a Marcação de quem marca; sem ela, o contrário.
     const withBall = ball === k;
     const attr = withBall ? ROLES[p.role].dom : ROLES[p.role].mar;
-    let n = attrLances(attr);
-    const notes = [`${withBall ? 'Domínio' : 'Marcação'} ${attr}: ${n} lance${n > 1 ? 's' : ''}`];
+    const vs = withBall ? ROLES[q.role].mar : ROLES[q.role].dom;
+    let n = diffLances(attr, vs);
+    const notes = [`${withBall ? 'Domínio' : 'Marcação'} ${attr} contra ${withBall ? 'Marcação' : 'Domínio'} ${vs}: ${n} lance${n > 1 ? 's' : ''}`];
     let reads = 0;
-    if (k === 'def' && p.ready) {
+    if ((k === 'def' || kind === 'bote') && p.ready) {
       n += 1;
-      notes.push('Prontidão +1');
+      notes.push(kind === 'bote' && k === 'atk' ? 'Bote de prontidão +1' : 'Prontidão +1');
     }
     if (kind === 'carrinho' && k === 'atk') {
       n += 1;
       notes.push('Carrinho +1');
     }
+    if (p.fol < TIRED_FOL) {
+      n -= 1;
+      notes.push('Cansado −1');
+    }
     if (ball === k) {
       const m = markers(s, p).length;
-      if (m >= 2) {
+      if (m >= 3) {
         n -= 1;
         notes.push(`Cercado por ${m} −1`);
       }
@@ -111,6 +127,7 @@ export function startDuel(s: GameState, kind: DuelKind, initiatorId: string, tar
     return { playerId: p.id, lances: c.lances, lancesLeft: c.lances, readsLeft: c.reads, vantage: 0, notes } satisfies DuelSide;
   });
   d.ready = false;
+  if (kind === 'bote') a.ready = false;
   // A posse é de quem está com ela: em desarme, carrinho ou bola dividida, quem tem a bola sai com 1 de vantagem.
   if (kind !== 'drible') {
     sides[ball === 'atk' ? 0 : 1].vantage = 1;
@@ -204,7 +221,12 @@ export function resolveTempo(s: GameState, cs: DuelState, atkChoice: Lance, defC
     ['atk', a, pa],
     ['def', d, pd],
   ] as const) {
-    if (l === 'esperar') continue;
+    if (l === 'esperar') {
+      // Esperar recupera 1 de fôlego e dá uma Leitura para o próximo tempo.
+      p.fol = Math.min(ROLES[p.role].fol, p.fol + 1);
+      if (cs[k].readsLeft < 2) cs[k].readsLeft++;
+      continue;
+    }
     cs[k].lancesLeft--;
     p.fol -= LANCE_FOL[weightOf(p)];
     if (l === 'finta' && !p.pedalada) p.hab -= 1;

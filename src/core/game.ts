@@ -5,6 +5,7 @@ import {
   COURT_H,
   COURT_W,
   FOL_REGEN,
+  FOL_REST,
   FOUL_LIMIT,
   HAB_REGEN,
   ROLES,
@@ -13,6 +14,12 @@ import {
   DRINK_MAX,
   DRINK_MOVE,
   DRINK_ROUNDS,
+  ALTO_BONUS,
+  ALTO_COST,
+  MAX_ACTIVATIONS,
+  MAX_ACTIVATIONS_ATK,
+  TACKLES_PER_PHASE,
+  REBOUND_CHANCE,
   ROUNDS_PER_HALF,
   SPRINT_BONUS,
   SPRINT_COST,
@@ -89,6 +96,7 @@ export function createGame(opts: NewGameOptions = {}): GameState {
         muralha: false,
         goals: 0,
         energetico: false,
+        altoRecebido: false,
       });
     });
   }
@@ -110,6 +118,10 @@ export function createGame(opts: NewGameOptions = {}): GameState {
     pendingDirect: null,
     drinks: [],
     drinkSeq: 0,
+    activationsUsed: 0,
+    activationsMax: MAX_ACTIVATIONS,
+    tacklesUsed: 0,
+    pendingReaction: null,
     rng: (opts.seed ?? 1) | 0,
     events: [],
     log: [],
@@ -148,12 +160,17 @@ function placeForKickoff(s: GameState, kicking: Team): void {
 function startPhase(s: GameState, team: Team): void {
   s.activeTeam = team;
   s.phase++;
+  s.activationsUsed = 0;
+  s.activationsMax = s.holder && holderOf(s).team === team ? MAX_ACTIVATIONS_ATK : MAX_ACTIVATIONS;
+  s.tacklesUsed = 0;
+  s.pendingReaction = null;
+  for (const p of s.players) p.altoRecebido = false;
   for (const p of teamPlayers(s, team)) {
     const def = ROLES[p.role];
     p.activated = false;
     p.unbalanced = false;
     p.muralha = false;
-    p.fol = Math.min(def.fol, p.fol + FOL_REGEN);
+    p.fol = Math.min(def.fol, p.fol + (p.ready ? FOL_REST : FOL_REGEN));
     p.hab = Math.min(def.hab, p.hab + HAB_REGEN);
   }
   const h = holderOf(s);
@@ -170,6 +187,9 @@ function halfPhases(s: GameState): number {
 export function endPhase(s: GameState): void {
   if (s.over) return;
   if (s.activation) finishActivation(s);
+  // Regra dos 4 segundos também vale para o goleiro que nem chegou a agir na fase.
+  if (s.keeperMustPass && s.holder === s.keeperMustPass) keeperTimeout(s, getPlayer(s, s.keeperMustPass));
+  s.keeperMustPass = null;
   for (const p of teamPlayers(s, s.activeTeam)) {
     if (!p.activated) p.ready = true;
     p.activated = true;
@@ -216,7 +236,7 @@ function faceAfterPhase(s: GameState, team: Team): void {
 }
 
 export function activatable(s: GameState): Player[] {
-  if (s.over) return [];
+  if (s.over || s.activationsUsed >= s.activationsMax) return [];
   return teamPlayers(s, s.activeTeam).filter((p) => !p.activated);
 }
 
@@ -227,7 +247,18 @@ export function beginActivation(s: GameState, id: string): void {
     if (s.activation.moved || s.activation.acted) endActivation(s);
     else s.activation = null;
   }
-  s.activation = { playerId: id, startX: p.x, startY: p.y, moved: false, acted: false, sprinted: false, bonus: false, energized: false, picked: null };
+  s.activation = {
+    playerId: id,
+    startX: p.x,
+    startY: p.y,
+    moved: false,
+    acted: false,
+    sprinted: false,
+    bonus: false,
+    energized: false,
+    picked: null,
+    reacted: false,
+  };
 }
 
 export function cancelActivation(s: GameState): void {
@@ -245,16 +276,25 @@ function finishActivation(s: GameState): void {
   const p = getPlayer(s, a.playerId);
   p.activated = true;
   p.ready = false;
-  if (s.keeperMustPass === p.id && s.holder === p.id) {
-    // Regra dos 4 segundos: o goleiro segurou demais; a bola vai para o adversário.
-    const opp = teamPlayers(s, other(p.team)).filter((q) => q.role !== 'goleiro');
-    const taker = opp.reduce((b, q) => (dist(q, p) < dist(b, p) ? q : b));
-    s.holder = taker.id;
-    s.events.push({ kind: 'apito', text: '4 segundos! Bola do adversário' });
-    s.log.push(`${p.name} segurou a bola demais: tiro livre para o ${TEAM_NAME[taker.team]}.`);
-  }
+  s.activationsUsed++;
+  if (s.keeperMustPass === p.id && s.holder === p.id) keeperTimeout(s, p);
   if (s.keeperMustPass === p.id) s.keeperMustPass = null;
   s.activation = null;
+  s.pendingReaction = null;
+}
+
+/** Regra dos 4 segundos: o goleiro segurou demais; a bola vai para o adversário mais perto. */
+function keeperTimeout(s: GameState, p: Player): void {
+  const opp = teamPlayers(s, other(p.team)).filter((q) => q.role !== 'goleiro');
+  const taker = opp.reduce((b, q) => (dist(q, p) < dist(b, p) ? q : b));
+  s.holder = taker.id;
+  s.events.push({ kind: 'apito', text: '4 segundos! Bola do adversário' });
+  s.log.push(`${p.name} segurou a bola demais: tiro livre para o ${TEAM_NAME[taker.team]}.`);
+}
+
+/** Quantos jogadores o time ainda pode ativar nesta fase (contando quem está em ação). */
+export function activationsLeft(s: GameState): number {
+  return Math.max(0, s.activationsMax - s.activationsUsed);
 }
 
 export function endActivation(s: GameState): void {
@@ -429,14 +469,42 @@ export function moveTo(s: GameState, x: number, y: number): void {
     collectDrink(s, p, d);
     a.picked = d;
     if (at < path.length - 1) s.events.push({ kind: 'move', id: p.id, path: path.slice(at), withBall: s.holder === p.id, sprint: a.sprinted });
-    return;
-  }
-  s.events.push({ kind: 'move', id: p.id, path, withBall: s.holder === p.id, sprint: a.sprinted });
+  } else s.events.push({ kind: 'move', id: p.id, path, withBall: s.holder === p.id, sprint: a.sprinted });
+  checkReaction(s, p);
+}
+
+/** Defensores de prontidão colados em quem tem a bola (o de melhor marcação primeiro). */
+export function reactors(s: GameState, holder: Player): Player[] {
+  return s.players
+    .filter((q) => q.team !== holder.team && q.ready && !q.unbalanced && chebyshev(q, holder) === 1)
+    .sort((a, b) => ROLES[b.role].mar - ROLES[a.role].mar);
+}
+
+/** Quem tem a bola parou colado num defensor de prontidão: bote automático. */
+function checkReaction(s: GameState, p: Player): void {
+  if (s.holder !== p.id || s.pendingReaction) return;
+  const r = reactors(s, p)[0];
+  if (r) s.pendingReaction = r.id;
+}
+
+/** Começa o bote automático pendente (Duelo em que o defensor de prontidão é quem ataca a bola). */
+export function startReaction(s: GameState): DuelState {
+  const id = s.pendingReaction;
+  if (!id) throw new Error('Nenhum bote pendente');
+  s.pendingReaction = null;
+  const d = getPlayer(s, id);
+  const h = holderOf(s);
+  if (s.activation) s.activation.reacted = true;
+  d.facing = dirFromTo(d, h);
+  s.events.push({ kind: 'emote', id: d.id, emote: '!' });
+  s.log.push(`${d.name} estava de prontidão e dá o bote em ${h.name}!`);
+  return startDuel(s, 'bote', d.id, h.id);
 }
 
 export function undoMove(s: GameState): void {
   const a = s.activation;
-  if (!a || !a.moved || a.acted) throw new Error('Nada para desfazer');
+  if (!a || !a.moved || a.acted || a.reacted) throw new Error('Nada para desfazer');
+  s.pendingReaction = null;
   const p = getPlayer(s, a.playerId);
   const from = { x: p.x, y: p.y };
   p.x = a.startX;
@@ -468,23 +536,24 @@ export interface PassPreview {
 
 /** Prévia do passe de `from` para `to`. Sem sorte: a zona de corte sempre corta. */
 export function passPreview(s: GameState, from: Player, to: Player, alto: boolean): PassPreview {
-  const pas = ROLES[from.role].pas + (alto ? 2 : 0);
+  const pas = ROLES[from.role].pas + (alto ? ALTO_BONUS : 0);
   const d = dist(center(from), center(to));
   if (to.team !== from.team || to.id === from.id || d > pas + 0.01) return { ok: false, result: 'ok', dist: d };
   const opp = s.players.filter((q) => q.team !== from.team && !q.unbalanced);
   const dom = ROLES[to.role].dom;
   if (!alto) {
     for (const c of passLine(from, to)) {
-      const cutter = opp.find((q) => chebyshev(q, c) <= 1 && chebyshev(q, to) > 1);
+      // Quem está de prontidão antecipa e corta a até 2 casas da linha; os outros, a 1.
+      // Colado em quem passa, só corta se estiver em cima da linha (a tabela sai da pressão).
+      const cutter = opp.find((q) => chebyshev(q, c) <= (q.ready ? 2 : 1) && chebyshev(q, to) > 1 && (chebyshev(q, from) > 1 || (q.x === c.x && q.y === c.y)));
       if (cutter) return { ok: true, result: 'cortado', otherId: cutter.id, dist: d };
     }
     const contest = opp.filter((q) => chebyshev(q, to) === 1 && ROLES[q.role].mar > dom).sort((a, b) => ROLES[b.role].mar - ROLES[a.role].mar)[0];
     if (contest) return { ok: true, result: 'dividida', otherId: contest.id, dist: d };
     return { ok: true, result: 'ok', dist: d };
   }
-  const contest = opp
-    .filter((q) => chebyshev(q, to) <= 2 && ROLES[q.role].mar >= dom)
-    .sort((a, b) => chebyshev(a, to) - chebyshev(b, to) || ROLES[b.role].mar - ROLES[a.role].mar)[0];
+  // Passe alto: qualquer adversário a até 2 casas disputa a recepção.
+  const contest = opp.filter((q) => chebyshev(q, to) <= 2).sort((a, b) => chebyshev(a, to) - chebyshev(b, to) || ROLES[b.role].mar - ROLES[a.role].mar)[0];
   if (contest) return { ok: true, result: 'dividida', otherId: contest.id, dist: d };
   return { ok: true, result: 'ok', dist: d };
 }
@@ -499,9 +568,31 @@ export interface ShotPreview {
   keeperId?: string;
   /** Gol vazio: o goleiro está fora da área. */
   open: boolean;
-  /** Quem vê a escolha do outro antes. */
+  /** Quem vê a escolha do outro antes (só no tiro livre direto, que ainda é no palpite). */
   shooterReads: boolean;
   keeperReads: boolean;
+  /** Reflexo efetivo, com a posição do goleiro: bem colocado +1, deslocado −1 ou −2. */
+  refEff: number;
+  /** Posição do goleiro em relação à linha do chute. */
+  cover: 'fechado' | 'normal' | 'deslocado' | 'fora';
+  /** Ângulo fechado (chute de lado, quase sem gol para mirar): −1 de força. */
+  wide: boolean;
+  /** Chance de gol (0 a 1), já com bloqueio, gol vazio, posição e ângulo. */
+  chance: number;
+}
+
+/** Distância de um ponto ao segmento a–b. */
+function segDist(p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const L = vx * vx + vy * vy || 1;
+  const k = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / L));
+  return Math.hypot(p.x - (a.x + k * vx), p.y - (a.y + k * vy));
+}
+
+/** Chance de gol pela força contra o reflexo efetivo: 40% no empate, ±10% por ponto. */
+export function shotChance(force: number, refEff: number): number {
+  return Math.max(0.05, Math.min(0.9, 0.4 + 0.1 * (force - refEff)));
 }
 
 export function shotPreview(s: GameState, p: Player, bomba = false, direto = false): ShotPreview {
@@ -509,20 +600,36 @@ export function shotPreview(s: GameState, p: Player, bomba = false, direto = fal
   const d = distToGoal(p, p.team);
   const range = CHUTE_BASE + def.fin + 0.5;
   // Perto do gol o chute ganha força (+2 até 2 casas, +1 a 3); depois de 4 casas, perde 1 por casa.
-  const force = def.fin + (bomba ? 2 : 0) + Math.min(2, CHUTE_BASE - Math.ceil(d - 0.5));
+  const g = attackGoal(p.team);
+  const c = center(p);
+  const wide = !direto && Math.abs(g.y - c.y) > Math.abs(g.x - c.x) + 0.5;
+  // Distância: +2 até 2 casas, +1 a 3, 0 até 5, −1 até 7, −2 mais longe.
+  const near = d <= 2.5 ? 2 : d <= 3.5 ? 1 : d <= 5.5 ? 0 : d <= 7.5 ? -1 : -2;
+  const force = def.fin + (bomba ? 2 : 0) + near - (wide ? 1 : 0);
   const keeper = keeperOf(s, other(p.team));
   const ref = keeper ? ROLES.goleiro.ref + (keeper.muralha ? 2 : 0) : 0;
   let blockerId: string | undefined;
   if (!direto) {
+    // Só bloqueia quem fecha o chute de perto (até 3 casas de quem chuta), em cima da linha.
     for (const c of shotLine(p, p.team)) {
       const b = playerAt(s, c.x, c.y);
-      if (b && b.team !== p.team && b.role !== 'goleiro' && !b.unbalanced) {
+      if (b && b.team !== p.team && b.role !== 'goleiro' && !b.unbalanced && chebyshev(b, p) <= 3) {
         blockerId = b.id;
         break;
       }
     }
   }
   const open = !keeper || !inArea(keeper.team, keeper);
+  // Goleiro em cima da linha do chute fecha o ângulo; longe dela, deixa o gol aberto.
+  let cover: ShotPreview['cover'] = 'fora';
+  let refEff = ref;
+  if (keeper && !open) {
+    const kd = direto ? 0 : segDist(center(keeper), c, g);
+    cover = kd <= 0.8 ? 'fechado' : kd >= 1.5 ? 'deslocado' : 'normal';
+    refEff = ref + (cover === 'deslocado' ? (kd >= 2.2 ? -2 : -1) : 0);
+  }
+  // Defensor na linha do chute: a chance cai a 40% do normal (e, se não entrar, metade das vezes ele bloqueia).
+  const chance = (open ? 0.95 : shotChance(force, refEff)) * (blockerId ? 0.4 : 1);
   return {
     ok: d <= range || direto,
     dist: d,
@@ -533,6 +640,10 @@ export function shotPreview(s: GameState, p: Player, bomba = false, direto = fal
     open,
     shooterReads: force - ref >= 3,
     keeperReads: ref - force >= 3,
+    refEff,
+    cover,
+    wide,
+    chance,
   };
 }
 
@@ -574,16 +685,17 @@ export function currentTargets(s: GameState): Target[] {
         if (pv.ok) out.push({ kind: 'passe', toId: q.id, alto, preview: pv });
       }
     }
+    // Quem recebeu passe alto nesta fase ainda está dominando: não chuta nem dribla.
     const sp = shotPreview(s, p);
-    if (sp.ok) out.push({ kind: 'chute', preview: sp, bomba: false });
-    if (p.role === 'pivo' && !p.specialUsed) {
+    if (sp.ok && !p.altoRecebido) out.push({ kind: 'chute', preview: sp, bomba: false });
+    if (p.role === 'pivo' && !p.specialUsed && !p.altoRecebido) {
       const bp = shotPreview(s, p, true);
       if (bp.ok) out.push({ kind: 'chute', preview: bp, bomba: true });
     }
-    if (!a.bonus) {
+    if (!a.bonus && !p.altoRecebido) {
       for (const q of s.players) if (q.team !== p.team && chebyshev(q, p) === 1) out.push({ kind: 'drible', targetId: q.id });
     }
-  } else if (h.team !== p.team && !a.bonus) {
+  } else if (h.team !== p.team && !a.bonus && s.tacklesUsed < TACKLES_PER_PHASE) {
     if (chebyshev(h, p) === 1) out.push({ kind: 'desarme', targetId: h.id });
     else if (p.role === 'fixo' && !p.specialUsed && chebyshev(h, p) === 2) out.push({ kind: 'carrinho', targetId: h.id });
   }
@@ -610,8 +722,10 @@ export function pass(s: GameState, toId: string, alto: boolean): PassOutcome {
   if (!pv.ok) throw new Error('Passe fora do alcance');
   a.acted = true;
   a.bonus = false;
+  if (alto) p.fol = Math.max(0, p.fol - ALTO_COST);
   if (pv.result === 'cortado') {
     const cutter = getPlayer(s, pv.otherId!);
+    cutter.ready = false;
     s.holder = cutter.id;
     s.events.push({ kind: 'passe', fromId: p.id, toId: cutter.id, from: { x: p.x, y: p.y }, to: { x: cutter.x, y: cutter.y }, alto, result: 'cortado' });
     s.events.push({ kind: 'emote', id: cutter.id, emote: '!' });
@@ -619,6 +733,7 @@ export function pass(s: GameState, toId: string, alto: boolean): PassOutcome {
     return { result: 'cortado' };
   }
   s.holder = to.id;
+  if (alto) to.altoRecebido = true;
   s.events.push({ kind: 'passe', fromId: p.id, toId: to.id, from: { x: p.x, y: p.y }, to: { x: to.x, y: to.y }, alto, result: pv.result });
   p.facing = dirFromTo(p, to);
   if (pv.result === 'dividida') {
@@ -629,7 +744,10 @@ export function pass(s: GameState, toId: string, alto: boolean): PassOutcome {
   return { result: 'ok' };
 }
 
-export function shoot(s: GameState, corner: Corner, dive: Corner | null, bomba = false): 'gol' | 'defesa' | 'bloqueio' {
+export type ShotOutcome = 'gol' | 'defesa' | 'bloqueio' | 'rebote';
+
+/** Chute de bola rolando: sem palpite. A chance vem da força, do reflexo, da posição do goleiro e do ângulo. */
+export function shoot(s: GameState, bomba = false): ShotOutcome {
   const a = requireAction(s);
   const p = getPlayer(s, a.playerId);
   if (s.holder !== p.id) throw new Error('Sem a bola');
@@ -641,11 +759,27 @@ export function shoot(s: GameState, corner: Corner, dive: Corner | null, bomba =
   if (!pv.ok) throw new Error('Longe demais para chutar');
   a.acted = true;
   a.bonus = false;
-  return resolveShot(s, p, pv, corner, dive);
+  const CORN: Corner[] = ['esq', 'meio', 'dir'];
+  const corner = CORN[Math.floor(nextRandom(s) * 3)];
+  let result: ShotOutcome = nextRandom(s) < pv.chance ? 'gol' : pv.blockerId && (pv.open || nextRandom(s) < 0.5) ? 'bloqueio' : pv.open ? 'gol' : 'defesa';
+  // Mergulho só para a animação: no canto certo quando defende, no errado quando é gol.
+  const others = CORN.filter((k) => k !== corner);
+  const dive = pv.open ? null : result === 'gol' ? others[Math.floor(nextRandom(s) * 2)] : corner;
+  let reboundId: string | undefined;
+  if (result === 'defesa' && pv.force >= pv.refEff - 1 && nextRandom(s) < REBOUND_CHANCE) {
+    // Chute forte espalmado: a bola sobra para quem estiver mais perto da marca do pênalti.
+    const g = attackGoal(p.team);
+    const spot = { x: g.x + (p.team === 'azul' ? -2 : 2), y: g.y };
+    const near = s.players.filter((q) => q.role !== 'goleiro').sort((a2, b2) => dist(center(a2), spot) - dist(center(b2), spot))[0];
+    if (near) {
+      result = 'rebote';
+      reboundId = near.id;
+    }
+  }
+  return resolveShot(s, p, pv, result, corner, dive, reboundId);
 }
 
-function resolveShot(s: GameState, p: Player, pv: ShotPreview, corner: Corner, dive: Corner | null): 'gol' | 'defesa' | 'bloqueio' {
-  const result = shotResult(pv, corner, pv.open ? null : dive);
+function resolveShot(s: GameState, p: Player, pv: ShotPreview, result: ShotOutcome, corner: Corner, dive: Corner | null, reboundId?: string): ShotOutcome {
   s.events.push({
     kind: 'chute',
     shooterId: p.id,
@@ -655,6 +789,7 @@ function resolveShot(s: GameState, p: Player, pv: ShotPreview, corner: Corner, d
     keeperId: pv.keeperId ?? null,
     result,
     blockerId: pv.blockerId,
+    reboundId,
     team: p.team,
   });
   if (result === 'bloqueio') {
@@ -664,6 +799,11 @@ function resolveShot(s: GameState, p: Player, pv: ShotPreview, corner: Corner, d
     s.holder = pv.keeperId!;
     s.events.push({ kind: 'emote', id: pv.keeperId!, emote: 'estrela' });
     s.log.push(`${getPlayer(s, pv.keeperId!).name} defende o chute de ${p.name}!`);
+  } else if (result === 'rebote') {
+    const r = getPlayer(s, reboundId!);
+    s.holder = r.id;
+    s.events.push({ kind: 'emote', id: r.id, emote: r.team === p.team ? 'estrela' : '!' });
+    s.log.push(`${getPlayer(s, pv.keeperId!).name} espalma o chute de ${p.name} e a bola sobra para ${r.name}!`);
   } else {
     goal(s, p);
   }
@@ -712,6 +852,8 @@ export function startTackle(s: GameState, targetId: string, carrinho = false): D
       p.y = step.y;
     }
   } else if (d !== 1) throw new Error('Precisa estar colado em quem tem a bola');
+  if (s.tacklesUsed >= TACKLES_PER_PHASE) throw new Error('O time já tentou o desarme desta fase');
+  s.tacklesUsed++;
   a.acted = true;
   p.facing = dirFromTo(p, t);
   s.log.push(`${p.name} ${carrinho ? 'dá um carrinho em' : 'tenta desarmar'} ${t.name}.`);
@@ -747,6 +889,10 @@ export function applyDuel(s: GameState, cs: DuelState): ReturnType<typeof duelOu
   }
   if (out === 'roubou') {
     s.holder = markP.id;
+    if (holderActing) {
+      a!.acted = true;
+      a!.bonus = false;
+    }
     s.events.push({ kind: 'duelo', holderId: ballP.id, otherId: markP.id, result: 'roubou' });
     s.events.push({ kind: 'emote', id: markP.id, emote: '!' });
     s.events.push({ kind: 'emote', id: ballP.id, emote: 'suor' });
@@ -798,7 +944,7 @@ export function directKickPreview(s: GameState): { shooter: Player; preview: Sho
   return { shooter: p, preview: shotPreview(s, p, false, true) };
 }
 
-export function takeDirectKick(s: GameState, corner: Corner, dive: Corner | null): 'gol' | 'defesa' | 'bloqueio' {
+export function takeDirectKick(s: GameState, corner: Corner, dive: Corner | null): ShotOutcome {
   if (!s.pendingDirect) throw new Error('Sem tiro livre direto');
   const p = getPlayer(s, s.pendingDirect);
   s.pendingDirect = null;
@@ -815,7 +961,7 @@ export function takeDirectKick(s: GameState, corner: Corner, dive: Corner | null
   p.y = spot.y;
   p.facing = p.team === 'azul' ? 'E' : 'W';
   const pv = shotPreview(s, p, false, true);
-  const r = resolveShot(s, p, pv, corner, dive);
+  const r = resolveShot(s, p, pv, shotResult(pv, corner, pv.open ? null : dive), corner, dive);
   if (s.activation && s.activation.playerId === p.id) s.activation.bonus = false;
   return r;
 }

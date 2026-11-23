@@ -126,7 +126,12 @@ function equilibrium(wBall: Weight, wMark: Weight, ballIsAtk: boolean) {
   const pm = cm.map((x) => x / sm);
   let value = 0;
   M.forEach((row, i) => row.forEach((v, j) => (value += v * pb[i] * pm[j])));
-  return { matrix: M, ball: Object.fromEntries(LANCES.map((l, i) => [l, +pb[i].toFixed(3)])), mark: Object.fromEntries(LANCES.map((l, i) => [l, +pm[i].toFixed(3)])), value: +value.toFixed(3) };
+  return {
+    matrix: M,
+    ball: Object.fromEntries(LANCES.map((l, i) => [l, +pb[i].toFixed(3)])),
+    mark: Object.fromEntries(LANCES.map((l, i) => [l, +pm[i].toFixed(3)])),
+    value: +value.toFixed(3),
+  };
 }
 
 const eq = {

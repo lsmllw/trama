@@ -81,7 +81,7 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
         h(
           'p',
           { class: 'lead' },
-          'Futsal tático por turnos: ande, passe, drible, chute. Cada posição joga diferente. Você é o Azul; a máquina comanda o Vermelho. Dois tempos de 8 rodadas.',
+          'Futsal tático por turnos: ande, passe, drible, chute. Cada posição joga diferente. Você é o Azul; a máquina comanda o Vermelho. Dois tempos de 6 rodadas.',
         ),
         h(
           'div',
@@ -109,21 +109,30 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
           h(
             'ul',
             {},
-            h('li', {}, 'Na sua fase, cada jogador anda e depois age uma vez: passar, chutar, driblar ou desarmar.'),
             h(
               'li',
               {},
-              'Com a bola, quem encosta num marcador para: daí só sai no drible. Passes rasteiros são cortados por quem está perto da linha; o passe alto (A) passa por cima, mas a recepção fica disputada.',
+              'Na sua fase, cada jogador ativado anda e depois age uma vez: passar, chutar, driblar ou desarmar. Com a bola você ativa os 5; sem ela, só 3.',
             ),
             h(
               'li',
               {},
-              'Drible e desarme viram um Duelo de 3 tempos: Arrancada/Bote vence Finta, Proteger/Fechar vence Arrancada/Bote, Finta vence Proteger e quem espera.',
+              'Quem não é ativado fica de prontidão: corta passes rasteiros a até 2 casas da linha e dá bote automático em quem parar colado com a bola. As casas laranja mostram onde isso acontece.',
             ),
             h(
               'li',
               {},
-              'No chute você escolhe o canto e o goleiro escolhe o lado. A partir da 6ª falta do time no tempo, toda falta é tiro livre direto do 10 m.',
+              'Com a bola, quem encosta num marcador para: daí só sai no drible. O passe alto (A) passa por cima de quem corta, mas custa fôlego, a recepção é disputada e quem recebe não chuta nem dribla na mesma fase.',
+            ),
+            h(
+              'li',
+              {},
+              'Drible e desarme viram um Duelo de 3 tempos. Os lances vêm do Domínio de quem tem a bola contra a Marcação de quem marca. Esperar recupera fôlego e dá uma Leitura. Cada time só desarma uma vez por fase.',
+            ),
+            h(
+              'li',
+              {},
+              'O chute depende de força, distância, ângulo e de onde está o goleiro; a chance aparece no botão antes de chutar, e a defesa pode dar rebote. A partir da 4ª falta do time no tempo, toda falta é tiro livre direto do 10 m (aí sim, no palpite do canto).',
             ),
             h('li', {}, 'Goleiro com a bola tem que soltar na fase seguinte (regra dos 4 segundos).'),
             h(
@@ -137,17 +146,23 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
           'div',
           { class: 'start-row' },
           h('span', {}, 'Dificuldade: '),
-          (['recruta', 'veterano'] as Difficulty[]).map((d) =>
+          (['recruta', 'veterano', 'craque'] as Difficulty[]).map((d) =>
             h(
               'button',
               {
                 class: difficulty === d ? 'on' : '',
+                title:
+                  d === 'recruta'
+                    ? 'Joga o óbvio: corre para o gol e chuta quando dá'
+                    : d === 'veterano'
+                      ? 'Pesa riscos, guarda prontidão e escolhe o melhor lance'
+                      : 'Pensa também na sua resposta antes de jogar',
                 onclick: () => {
                   difficulty = d;
                   render();
                 },
               },
-              d === 'recruta' ? 'Recruta' : 'Veterano',
+              d === 'recruta' ? 'Recruta' : d === 'veterano' ? 'Veterano' : 'Craque',
             ),
           ),
           h('button', { class: 'primary big', onclick: start }, 'Começar partida (Enter)'),

@@ -62,8 +62,11 @@ export interface Player {
   hab: number;
   /** Já agiu nesta fase. */
   activated: boolean;
-  /** Prontidão: não agiu na fase anterior do time, +1 lance ao defender no Duelo. */
+  /** Prontidão: não agiu na fase do time. Na fase do adversário corta passes a 2 casas, dá bote automático em quem
+   * chegar colado com a bola e tem +1 lance ao defender. Gasta ao reagir. */
   ready: boolean;
+  /** Recebeu passe alto nesta fase: não chuta nem dribla até a próxima. */
+  altoRecebido: boolean;
   /** Perdeu um duelo: sem zona de corte até a próxima fase do seu time. */
   unbalanced: boolean;
   /** Especial da posição já usado neste tempo. */
@@ -89,6 +92,8 @@ export interface Activation {
   energized: boolean;
   /** Garrafa pega no caminho deste movimento (volta para a quadra se o movimento for desfeito). */
   picked: Drink | null;
+  /** Já sofreu o bote automático depois de andar (não dá mais para desfazer o movimento). */
+  reacted: boolean;
 }
 
 /** Garrafa de energético jogada pela torcida: fica na quadra algumas rodadas. */
@@ -114,8 +119,10 @@ export type GameEvent =
       corner: Corner;
       dive: Corner | null;
       keeperId: string | null;
-      result: 'gol' | 'defesa' | 'bloqueio';
+      result: 'gol' | 'defesa' | 'bloqueio' | 'rebote';
       blockerId?: string;
+      /** Rebote: quem ficou com a bola. */
+      reboundId?: string;
       team: Team;
     }
   | { kind: 'duelo'; holderId: string; otherId: string; result: 'passou' | 'roubou' | 'manteve' | 'falta'; to?: Pos }
@@ -155,6 +162,14 @@ export interface GameState {
   keeperMustPass: string | null;
   /** 6ª falta em diante: este jogador cobra um tiro livre direto do 10 m antes de seguir. */
   pendingDirect: string | null;
+  /** Jogadores que já agiram nesta fase (máximo MAX_ACTIVATIONS). */
+  activationsUsed: number;
+  /** Quantos o time pode ativar nesta fase (4 com a bola no começo da fase, 3 sem). */
+  activationsMax: number;
+  /** Desarmes tentados pelo time nesta fase. */
+  tacklesUsed: number;
+  /** Bote automático de um defensor de prontidão, esperando o Duelo (quem chama resolve com startReaction). */
+  pendingReaction: string | null;
   /** Garrafas de energético na quadra. */
   drinks: Drink[];
   drinkSeq: number;

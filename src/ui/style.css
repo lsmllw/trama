@@ -28,7 +28,12 @@ body {
   min-height: 100vh;
   background: radial-gradient(circle at 50% -20%, #2a2f48, var(--bg) 60%) fixed;
   color: var(--text);
-  font: 14px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font:
+    14px/1.45 system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
 }
 
 button {
@@ -39,7 +44,10 @@ button {
   border-radius: 8px;
   padding: 6px 10px;
   cursor: pointer;
-  transition: transform 0.08s, border-color 0.1s, background 0.1s;
+  transition:
+    transform 0.08s,
+    border-color 0.1s,
+    background 0.1s;
 }
 button:hover:not(:disabled) {
   border-color: var(--gold);
@@ -70,7 +78,9 @@ kbd {
   border-radius: 4px;
   background: #0006;
   border: 1px solid var(--line);
-  font: 600 11px/16px ui-monospace, monospace;
+  font:
+    600 11px/16px ui-monospace,
+    monospace;
   text-align: center;
 }
 .sub {
@@ -138,7 +148,9 @@ kbd {
   text-align: center;
 }
 .score {
-  font: 900 34px/1 ui-monospace, monospace;
+  font:
+    900 34px/1 ui-monospace,
+    monospace;
   display: flex;
   gap: 12px;
   justify-content: center;
@@ -302,7 +314,9 @@ canvas.board {
   background: var(--panel-2);
   border-left: 4px solid var(--azul);
   cursor: pointer;
-  transition: transform 0.1s, background 0.1s;
+  transition:
+    transform 0.1s,
+    background 0.1s;
 }
 .pcard.vermelho {
   border-left-color: var(--vermelho);
@@ -387,7 +401,9 @@ canvas.board {
   padding: 24px 16px 40px;
 }
 .logo {
-  font: 900 46px/1 system-ui, sans-serif;
+  font:
+    900 46px/1 system-ui,
+    sans-serif;
   letter-spacing: 4px;
   margin: 0;
   text-shadow: 0 4px 0 #000;
@@ -721,7 +737,9 @@ button.drink-btn img {
 }
 .role-badge i {
   font-style: normal;
-  text-shadow: 0 1px 0 #000, 0 0 3px #0008;
+  text-shadow:
+    0 1px 0 #000,
+    0 0 3px #0008;
 }
 .role-badge.with-label {
   padding: 1px 5px;
@@ -739,7 +757,9 @@ button.drink-btn img {
   border-radius: 12px;
   background: linear-gradient(160deg, rgba(34, 34, 54, 0.97), rgba(18, 18, 30, 0.97));
   border: 1px solid #ffe14d66;
-  box-shadow: 0 10px 28px #000b, inset 0 1px 0 #ffffff14;
+  box-shadow:
+    0 10px 28px #000b,
+    inset 0 1px 0 #ffffff14;
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -794,7 +814,9 @@ button.drink-btn img {
   stroke-width: 1;
 }
 .radar .lbl {
-  font: 700 10px system-ui, sans-serif;
+  font:
+    700 10px system-ui,
+    sans-serif;
   fill: var(--muted);
 }
 .radar .lbl .val {
@@ -1057,11 +1079,17 @@ button.drink-btn img {
   border: 1px solid #ffffff2a;
   border-left: 5px solid var(--c);
   background: linear-gradient(90deg, rgba(22, 22, 36, 0.96), rgba(44, 46, 70, 0.93));
-  box-shadow: 0 3px 0 #000a, 0 0 0 0 var(--c);
+  box-shadow:
+    0 3px 0 #000a,
+    0 0 0 0 var(--c);
   transform: skewX(-9deg);
   animation: lanceIn 0.3s cubic-bezier(0.2, 1.4, 0.4, 1) both;
   animation-delay: calc(var(--i) * 55ms);
-  transition: translate 0.12s, box-shadow 0.12s, border-color 0.12s, background 0.12s;
+  transition:
+    translate 0.12s,
+    box-shadow 0.12s,
+    border-color 0.12s,
+    background 0.12s;
 }
 .duel-menu.from-left .lance-btn {
   --from: -34px;
@@ -1075,7 +1103,9 @@ button.drink-btn img {
   translate: 8px 0;
   border-color: var(--c);
   background: linear-gradient(90deg, rgba(40, 38, 60, 0.98), rgba(70, 66, 100, 0.95));
-  box-shadow: 0 3px 0 #000a, 0 0 14px -2px var(--c);
+  box-shadow:
+    0 3px 0 #000a,
+    0 0 14px -2px var(--c);
   transform: skewX(-9deg);
 }
 .duel-menu.from-left .lance-btn:hover:not(:disabled),

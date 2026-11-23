@@ -9,43 +9,43 @@ import {
   beginActivation,
   bonusAction,
   canPlay,
-
-  chebyshev,
+  canSprint,
+  canUseDrink,
   chooseCorner,
   chooseDive,
   chooseLance,
   createGame,
   currentTargets,
   destinations,
-  distToGoal,
+  directKickPreview,
   endActivation,
   endPhase,
-  executePlan,
+  executeAction,
   getPlayer,
-  goalChance,
   holderOf,
   LANCES,
   moveTo,
   newMemory,
   nextRandom,
-  other,
-  pass,
+  obviousPlan,
   planActivation,
   resolveTempo,
   ROLES,
-  shoot,
   shotPreview,
   shotResult,
+  sprint,
+  startReaction,
   takeDirectKick,
-  directKickPreview,
+  useDrink,
+  useRead,
 } from '../src/core';
-import type { Corner, DuelState, GameState, Lance, LanceMemory, Plan, PlannedAction, Pos, ShotPreview, SideKey, Team } from '../src/core';
+import type { Corner, DuelState, GameState, Lance, LanceMemory, Plan, PlannedAction, ShotPreview, SideKey, Team } from '../src/core';
 // @ts-expect-error tipos do Node não estão instalados neste projeto
 import { writeFileSync } from 'node:fs';
 
 declare const process: { argv: string[] };
 
-type AgentName = 'veterano' | 'recruta' | 'guloso' | 'aleatorio';
+type AgentName = 'veterano' | 'recruta' | 'craque' | 'aleatorio';
 const CORNERS: Corner[] = ['esq', 'meio', 'dir'];
 const clone = (s: GameState): GameState => structuredClone({ ...s, events: [], log: [] });
 const rnd = (s: GameState, n: number) => Math.floor(nextRandom(s) * n);
@@ -80,66 +80,6 @@ function randomPlan(s: GameState): Plan | null {
   return { playerId: p.id, sprint: false, move, action, score: 0 };
 }
 
-/** Jogada "óbvia", sem prever nada: ataca o gol, passa para frente, persegue a bola. */
-function greedyPlan(s: GameState): Plan | null {
-  const ps = activatable(s);
-  if (!ps.length) return null;
-  const h = holderOf(s);
-  const team = s.activeTeam;
-  const attacking = h.team === team;
-  // Quem não tem a bola joga antes; quem tem a bola, por último.
-  const p = ps.find((q) => q.id !== h.id) ?? ps[0];
-  const cells: (Pos | null)[] = [null];
-  {
-    const t = clone(s);
-    beginActivation(t, p.id);
-    cells.push(...destinations(t));
-  }
-  let best: Plan = { playerId: p.id, sprint: false, move: null, action: null, score: -Infinity };
-  for (const c of cells) {
-    const t = clone(s);
-    beginActivation(t, p.id);
-    if (c) moveTo(t, c.x, c.y);
-    const me = getPlayer(t, p.id);
-    const opps = t.players.filter((q) => q.team !== team);
-    const free = opps.every((q) => chebyshev(q, me) > 1);
-    let v: number;
-    let action: PlannedAction | null = null;
-    if (attacking && me.id === h.id) {
-      v = -0.3 * distToGoal(me, team);
-      for (const tg of currentTargets(t)) {
-        if (tg.kind === 'chute' && goalChance(tg.preview) >= 0.3 && 10 * goalChance(tg.preview) > v) {
-          v = 10 * goalChance(tg.preview);
-          action = toAction(tg);
-        } else if (tg.kind === 'passe' && tg.preview.result === 'ok') {
-          const q = getPlayer(t, tg.toId);
-          const gain = distToGoal(me, team) - distToGoal(q, team);
-          if (gain > 0 && 3 + gain * 0.5 > v) {
-            v = 3 + gain * 0.5;
-            action = toAction(tg);
-          }
-        } else if (tg.kind === 'drible' && v < 1) {
-          v = 1;
-          action = toAction(tg);
-        }
-      }
-    } else if (attacking) {
-      v = -distToGoal(me, team) + (free ? 3 : 0);
-    } else if (me.role === 'goleiro') {
-      v = -distToGoal(me, other(team)) * 2;
-    } else {
-      v = -chebyshev(me, getPlayer(t, h.id));
-      const tk = currentTargets(t).find((x) => x.kind === 'desarme' || x.kind === 'carrinho');
-      if (tk) {
-        v += 5;
-        action = toAction(tk);
-      }
-    }
-    if (v > best.score) best = { playerId: p.id, sprint: false, move: c, action, score: v };
-  }
-  return best;
-}
-
 interface Agent {
   name: AgentName;
   plan(s: GameState): Plan | null;
@@ -148,7 +88,8 @@ interface Agent {
 }
 
 function agent(name: AgentName): Agent {
-  const smartLance = (diff: 'veterano' | 'recruta') => (s: GameState, cs: DuelState, k: SideKey, mem: LanceMemory) => chooseLance(s, cs, k, mem, null, diff);
+  const smartLance = (diff: 'veterano' | 'recruta' | 'craque') => (s: GameState, cs: DuelState, k: SideKey, mem: LanceMemory) =>
+    chooseLance(s, cs, k, mem, null, diff);
   const randomLance = (s: GameState, cs: DuelState, k: SideKey) => {
     const ok = LANCES.filter((l) => canPlay(s, cs, k, l));
     return ok[rnd(s, ok.length)];
@@ -158,9 +99,9 @@ function agent(name: AgentName): Agent {
     case 'veterano':
       return { name, plan: (s) => planActivation(s, 'veterano'), lance: smartLance('veterano'), corner: chooseCorner };
     case 'recruta':
-      return { name, plan: (s) => planActivation(s, 'recruta'), lance: smartLance('recruta'), corner: chooseCorner };
-    case 'guloso':
-      return { name, plan: greedyPlan, lance: randomLance, corner: randomCorner };
+      return { name, plan: obviousPlan, lance: smartLance('recruta'), corner: chooseCorner };
+    case 'craque':
+      return { name, plan: (s) => planActivation(s, 'craque'), lance: smartLance('craque'), corner: chooseCorner };
     case 'aleatorio':
       return { name, plan: randomPlan, lance: randomLance, corner: randomCorner };
   }
@@ -209,6 +150,8 @@ interface GameRec {
   drinksPicked: number;
   drinksUsed: number;
   goalsAfterKickoffPhase: number;
+  reactions: number;
+  cuts: number;
 }
 
 function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
@@ -235,6 +178,8 @@ function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
     drinksPicked: 0,
     drinksUsed: 0,
     goalsAfterKickoffPhase: 0,
+    reactions: 0,
+    cuts: 0,
   };
   let possTeam: Team = holderOf(s).team;
   let possStartPhase = s.phase;
@@ -274,8 +219,21 @@ function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
     while (!cs.done) {
       const pa = getPlayer(s, cs.atk.playerId);
       const pd = getPlayer(s, cs.def.playerId);
-      const a = ag(pa.team).lance(s, cs, 'atk', mem[pd.team]);
-      const d = ag(pd.team).lance(s, cs, 'def', mem[pa.team]);
+      // Leituras: quem lê escolhe depois de ver o outro (aqui, a escolha dele é refeita sabendo a do outro).
+      const readsA = cs.exposed === 'def' || (cs.exposed !== 'atk' && cs.atk.readsLeft > 0 && useRead(cs, 'atk'));
+      const readsD = !readsA && (cs.exposed === 'atk' || (cs.def.readsLeft > 0 && useRead(cs, 'def')));
+      let a: Lance;
+      let d: Lance;
+      if (readsA) {
+        d = ag(pd.team).lance(s, cs, 'def', mem[pa.team]);
+        a = ag(pa.team).name === 'aleatorio' ? ag(pa.team).lance(s, cs, 'atk', mem[pd.team]) : chooseLance(s, cs, 'atk', mem[pd.team], d, 'veterano');
+      } else if (readsD) {
+        a = ag(pa.team).lance(s, cs, 'atk', mem[pd.team]);
+        d = ag(pd.team).name === 'aleatorio' ? ag(pd.team).lance(s, cs, 'def', mem[pa.team]) : chooseLance(s, cs, 'def', mem[pa.team], a, 'veterano');
+      } else {
+        a = ag(pa.team).lance(s, cs, 'atk', mem[pd.team]);
+        d = ag(pd.team).lance(s, cs, 'def', mem[pa.team]);
+      }
       mem[pa.team][a]++;
       mem[pd.team][d]++;
       resolveTempo(s, cs, a, d);
@@ -285,29 +243,25 @@ function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
     turnover('duelo', before);
   };
 
-  const doShot = (shooterId: string, bomba: boolean, direct: boolean) => {
+  const recShot = (shooterId: string, bomba: boolean, direct: boolean, act: () => void) => {
     const p = getPlayer(s, shooterId);
     const pv = direct ? directKickPreview(s)!.preview : shotPreview(s, p, bomba);
-    let corner = ag(p.team).corner(s, pv);
-    let dive = chooseDive(s);
-    if (pv.keeperReads) dive = corner;
-    else if (pv.shooterReads) corner = CORNERS.find((c) => shotResult(pv, c, dive) === 'gol') ?? corner;
+    const beforeTeam = p.team;
+    const evStart = s.events.length;
+    act();
+    const ev = s.events.slice(evStart).find((e) => e.kind === 'chute');
+    const result = ev && ev.kind === 'chute' ? ev.result : 'nada';
     let n = 0;
     for (const c of CORNERS) for (const d of CORNERS) if (shotResult(pv, c, d) === 'gol') n++;
-    const before = s.score[p.team];
-    const beforeTeam = p.team;
-    if (direct) takeDirectKick(s, corner, dive);
-    else shoot(s, corner, dive, bomba);
-    const result = s.score[beforeTeam] > before ? 'gol' : pv.blockerId ? 'bloqueio' : 'defesa';
     rec.shots.push({
       team: p.team,
       role: p.role,
       dist: pv.dist,
       force: pv.force,
-      ref: pv.ref,
+      ref: pv.refEff,
       open: pv.open,
       blocked: !!pv.blockerId,
-      pUniform: pv.blockerId ? 0 : n / 9,
+      pUniform: pv.blockerId ? 0 : direct ? n / 9 : pv.chance,
       result,
       direct,
       phasesInPossession: s.phase - possStartPhase,
@@ -315,17 +269,38 @@ function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
     });
     if (result !== 'gol') turnover('chute', beforeTeam);
   };
+  const doDirect = () => {
+    rec.directKicks++;
+    const id = s.pendingDirect!;
+    const p = getPlayer(s, id);
+    recShot(id, false, true, () => {
+      const pv = directKickPreview(s)!.preview;
+      let corner = ag(p.team).corner(s, pv);
+      let dive = chooseDive(s);
+      if (pv.keeperReads) dive = corner;
+      else if (pv.shooterReads) corner = CORNERS.find((c) => shotResult(pv, c, dive) === 'gol') ?? corner;
+      takeDirectKick(s, corner, dive);
+    });
+  };
+  const doAction = (act: PlannedAction | null) => {
+    if (!s.activation) return;
+    const beforeTeam = holderOf(s).team;
+    let out: ReturnType<typeof executeAction> | null = null;
+    if (act?.kind === 'chute') recShot(s.activation.playerId, act.bomba, false, () => (out = executeAction(s, act)));
+    else out = executeAction(s, act);
+    if (act?.kind === 'passe') turnover('passe', beforeTeam);
+    const o = out as ReturnType<typeof executeAction> | null;
+    if (o?.duel) runDuel(o.duel);
+  };
 
   let guard = 0;
   while (!s.over && guard++ < 3000) {
     scan();
     if (s.pendingDirect) {
-      rec.directKicks++;
-      doShot(s.pendingDirect, false, true);
+      doDirect();
       continue;
     }
     const a = ag(s.activeTeam);
-    // Tamanho do espaço de decisão: casas × ações do jogador que vai agir.
     const plan = a.plan(s);
     if (!plan) {
       endPhase(s);
@@ -339,24 +314,22 @@ function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
       rec.optionsN++;
     }
     rec.activations++;
-    const beforeTeam = holderOf(s).team;
-    const r = executePlan(s, plan);
-    if (plan.action?.kind === 'passe' && !r.duel) turnover('passe', beforeTeam);
-    if (r.duel) {
-      runDuel(r.duel);
+    beginActivation(s, plan.playerId);
+    if (plan.drink && canUseDrink(s)) useDrink(s);
+    if (plan.sprint && canSprint(s)) sprint(s);
+    if (plan.move) moveTo(s, plan.move.x, plan.move.y);
+    if (s.pendingReaction) {
+      rec.reactions++;
+      runDuel(startReaction(s));
       if (s.pendingDirect) continue;
     }
-    if (r.shot) doShot(plan.playerId, plan.action?.kind === 'chute' && plan.action.bomba, false);
-    if (s.activation && s.activation.bonus && (a.name === 'veterano' || a.name === 'recruta')) {
-      const follow = bonusAction(s, a.name);
-      if (follow?.kind === 'passe') {
-        const out = pass(s, follow.toId, follow.alto);
-        if (out.duel) runDuel(out.duel);
-      } else if (follow?.kind === 'chute') doShot(s.activation!.playerId, follow.bomba, false);
+    doAction(plan.action);
+    if (s.pendingDirect) continue;
+    if (s.activation && s.activation.bonus && a.name !== 'aleatorio') {
+      doAction(bonusAction(s, a.name === 'craque' ? 'veterano' : a.name));
+      if (s.pendingDirect) continue;
     }
-    if (s.activation) {
-      endActivation(s);
-    }
+    if (s.activation) endActivation(s);
     scan();
   }
   scan();

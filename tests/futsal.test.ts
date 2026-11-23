@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   absRound,
+  activatable,
+  diffLances,
+  startReaction,
   applyDuel,
   canUseDrink,
   drainEvents,
   undoMove,
   useDrink,
-  attrLances,
   beginActivation,
   createGame,
   currentTargets,
@@ -121,8 +123,8 @@ describe('passe', () => {
 });
 
 describe('Duelo', () => {
-  it('lances vêm do Domínio (com bola) e da Marcação (sem bola)', () => {
-    expect([attrLances(5), attrLances(4), attrLances(3), attrLances(2)]).toEqual([3, 2, 2, 1]);
+  it('lances vêm da diferença entre o Domínio de quem tem a bola e a Marcação de quem marca', () => {
+    expect([diffLances(5, 3), diffLances(5, 4), diffLances(5, 5), diffLances(4, 5), diffLances(3, 5)]).toEqual([3, 2, 2, 2, 1]);
     const s = createGame({ seed: 1 });
     clearCourt(s);
     const ala = byName(s, 'Dudu');
@@ -133,11 +135,34 @@ describe('Duelo', () => {
     fixo.y = 5;
     s.holder = ala.id;
     const cs = startDuel(s, 'desarme', fixo.id, ala.id);
-    expect(cs.atk.lances).toBe(3);
-    expect(cs.def.lances).toBe(3);
+    expect(cs.atk.lances).toBe(2); // MAR 5 contra DOM 5
+    expect(cs.def.lances).toBe(2);
     expect(cs.def.vantage).toBe(1); // posse
+    // O fixo com a bola (DOM 3) contra o fixo que marca (MAR 5): 1 contra 3.
+    const rafa = byName(s, 'Rafa');
+    rafa.x = 10;
+    rafa.y = 4;
+    s.holder = rafa.id;
+    const cs2 = startDuel(s, 'desarme', fixo.id, rafa.id);
+    expect([cs2.atk.lances, cs2.def.lances]).toEqual([3, 1]);
   });
-  it('Bote contra Proteger é falta; a 6ª falta dá tiro livre direto do 10 m', () => {
+  it('Esperar recupera fôlego e dá uma Leitura para o tempo seguinte', () => {
+    const s = createGame({ seed: 1 });
+    clearCourt(s);
+    const ala = byName(s, 'Dudu');
+    const lelo = byName(s, 'Lelo');
+    ala.x = 10;
+    ala.y = 5;
+    lelo.x = 11;
+    lelo.y = 5;
+    s.holder = ala.id;
+    ala.fol = 5;
+    const cs = startDuel(s, 'drible', ala.id, lelo.id);
+    resolveTempo(s, cs, 'esperar', 'golpe');
+    expect(ala.fol).toBe(6);
+    expect(cs.atk.readsLeft).toBe(1);
+  });
+  it('Bote contra Proteger é falta; da 4ª falta em diante, tiro livre direto do 10 m', () => {
     const s = createGame({ seed: 1 });
     clearCourt(s);
     const ala = byName(s, 'Dudu');
@@ -147,7 +172,7 @@ describe('Duelo', () => {
     fixo.x = 11;
     fixo.y = 5;
     s.holder = ala.id;
-    s.fouls.vermelho = 5;
+    s.fouls.vermelho = 3;
     s.activeTeam = 'vermelho';
     beginActivation(s, fixo.id);
     const cs = startTackle(s, ala.id);
@@ -155,7 +180,7 @@ describe('Duelo', () => {
     expect(cs.done && cs.foul).toBe(true);
     expect(duelOutcome(cs)).toBe('falta');
     applyDuel(s, cs);
-    expect(s.fouls.vermelho).toBe(6);
+    expect(s.fouls.vermelho).toBe(4);
     expect(s.pendingDirect).toBe(ala.id);
     const r = takeDirectKick(s, 'esq', 'dir');
     expect(r).toBe('gol');
@@ -184,7 +209,7 @@ describe('Duelo', () => {
 });
 
 describe('chute', () => {
-  it('canto certo pega até força REF+2; canto oposto é gol; perto do gol o chute é mais forte', () => {
+  it('chance gradual: força contra reflexo, perto do gol mais forte, longe mais fraco', () => {
     const s = createGame({ seed: 1 });
     clearCourt(s);
     const piv = byName(s, 'Marreta');
@@ -193,13 +218,22 @@ describe('chute', () => {
     s.holder = piv.id;
     const pv = shotPreview(s, piv);
     expect(pv.force).toBe(7);
-    expect(shotResult(pv, 'esq', 'esq')).toBe('defesa');
-    expect(shotResult(pv, 'esq', 'dir')).toBe('gol');
-    expect(shotResult(pv, 'esq', 'meio')).toBe('gol');
-    piv.x = 11;
-    expect(shotPreview(s, piv).force).toBeLessThan(5);
+    expect(pv.chance).toBeCloseTo(0.6);
+    piv.x = 12;
+    const far = shotPreview(s, piv);
+    expect(far.force).toBeLessThan(5);
+    expect(far.chance).toBeLessThan(pv.chance);
+    // Goleiro fora da linha do chute: o reflexo efetivo cai.
+    piv.x = 16;
+    piv.y = 1;
+    const keeper = byName(s, 'Biel');
+    keeper.x = 19;
+    keeper.y = 7;
+    const off = shotPreview(s, piv);
+    expect(off.cover).toBe('deslocado');
+    expect(off.refEff).toBeLessThan(off.ref);
   });
-  it('defensor na linha bloqueia; gol faz quem sofreu dar a saída', () => {
+  it('defensor colado na linha atrapalha; gol faz quem sofreu dar a saída', () => {
     const s = createGame({ seed: 1 });
     clearCourt(s);
     const piv = byName(s, 'Marreta');
@@ -209,18 +243,122 @@ describe('chute', () => {
     const blocker = byName(s, 'Tonhão');
     blocker.x = 17;
     blocker.y = 5;
+    const free = shotPreview(s, { ...piv, x: 16, y: 4 } as typeof piv);
     expect(shotPreview(s, piv).blockerId).toBe(blocker.id);
+    expect(shotPreview(s, piv).chance).toBeLessThan(free.chance);
     blocker.x = -5;
+    // Goleiro fora da área: gol vazio.
+    byName(s, 'Biel').x = 12;
     beginActivation(s, piv.id);
-    expect(shoot(s, 'esq', 'dir')).toBe('gol');
+    expect(shoot(s)).toBe('gol');
     expect(s.score.azul).toBe(1);
     expect(holderOf(s).team).toBe('vermelho');
     expect(s.activeTeam).toBe('vermelho');
   });
+  it('tiro livre direto ainda é no palpite: canto certo pega até força REF+2', () => {
+    const s = createGame({ seed: 1 });
+    clearCourt(s);
+    const piv = byName(s, 'Marreta');
+    piv.x = 18;
+    piv.y = 5;
+    s.holder = piv.id;
+    const pv = shotPreview(s, piv, false, true);
+    expect(shotResult(pv, 'esq', 'esq')).toBe('defesa');
+    expect(shotResult(pv, 'esq', 'dir')).toBe('gol');
+  });
+});
+
+describe('prontidão e fases', () => {
+  it('com a bola o time age com os 5; sem ela, com 3, e os outros ficam de prontidão', () => {
+    const s = createGame({ seed: 1 });
+    expect(s.activationsMax).toBe(5);
+    endPhase(s); // vermelho, sem a bola
+    expect(s.activeTeam).toBe('vermelho');
+    expect(s.activationsMax).toBe(3);
+    for (let i = 0; i < 3; i++) {
+      const p = activatable(s)[0];
+      beginActivation(s, p.id);
+      endActivation(s);
+    }
+    expect(s.activeTeam).toBe('azul'); // a fase acabou sozinha depois do 3º
+    expect(s.players.filter((p) => p.team === 'vermelho' && p.ready)).toHaveLength(2);
+  });
+  it('de prontidão, o defensor corta o rasteiro a 2 casas da linha e dá bote em quem para colado', () => {
+    const s = createGame({ seed: 1 });
+    clearCourt(s);
+    const ala = byName(s, 'Dudu');
+    const teco = byName(s, 'Teco');
+    const lelo = byName(s, 'Lelo');
+    ala.x = 6;
+    ala.y = 5;
+    teco.x = 11;
+    teco.y = 5;
+    lelo.x = 8;
+    lelo.y = 7; // 2 casas da linha
+    s.holder = ala.id;
+    expect(passPreview(s, ala, teco, false).result).toBe('ok');
+    lelo.ready = true;
+    expect(passPreview(s, ala, teco, false).result).toBe('cortado');
+    // Bote automático: Dudu anda e para colado em Lelo.
+    lelo.x = 9;
+    lelo.y = 3;
+    beginActivation(s, ala.id);
+    moveTo(s, 8, 3);
+    expect(s.pendingReaction).toBe(lelo.id);
+    const cs = startReaction(s);
+    expect(cs.kind).toBe('bote');
+    expect(lelo.ready).toBe(false);
+    expect(cs.atk.notes.some((n) => n.includes('prontidão'))).toBe(true);
+  });
+  it('passe alto custa fôlego, a recepção é disputada a 2 casas e quem recebe não chuta na mesma fase', () => {
+    const s = createGame({ seed: 1 });
+    clearCourt(s);
+    const ala = byName(s, 'Dudu');
+    const piv = byName(s, 'Marreta');
+    const tonhao = byName(s, 'Tonhão');
+    ala.x = 10;
+    ala.y = 5;
+    piv.x = 15;
+    piv.y = 5;
+    tonhao.x = 13;
+    tonhao.y = 3;
+    s.holder = ala.id;
+    expect(passPreview(s, ala, piv, true).result).toBe('dividida');
+    tonhao.x = -5;
+    beginActivation(s, ala.id);
+    const fol = ala.fol;
+    pass(s, piv.id, true);
+    expect(ala.fol).toBe(fol - 1);
+    endActivation(s);
+    beginActivation(s, piv.id);
+    expect(currentTargets(s).some((t) => t.kind === 'chute' || t.kind === 'drible')).toBe(false);
+  });
+  it('só um desarme por fase para o time', () => {
+    const s = createGame({ seed: 1 });
+    clearCourt(s);
+    const ala = byName(s, 'Dudu');
+    const tonhao = byName(s, 'Tonhão');
+    const lelo = byName(s, 'Lelo');
+    ala.x = 10;
+    ala.y = 5;
+    tonhao.x = 11;
+    tonhao.y = 5;
+    lelo.x = 10;
+    lelo.y = 6;
+    s.holder = ala.id;
+    s.activeTeam = 'vermelho';
+    beginActivation(s, tonhao.id);
+    const cs = startTackle(s, ala.id);
+    while (!cs.done) resolveTempo(s, cs, 'esperar', 'esperar');
+    applyDuel(s, cs);
+    endActivation(s);
+    beginActivation(s, lelo.id);
+    expect(currentTargets(s).some((t) => t.kind === 'desarme')).toBe(false);
+  });
 });
 
 describe('tempos', () => {
-  it('8 rodadas por tempo, intervalo zera faltas, depois fim de jogo', () => {
+  it('6 rodadas por tempo, intervalo zera faltas, depois fim de jogo', () => {
     const s = createGame({ seed: 2 });
     s.fouls.azul = 3;
     let phases = 0;
@@ -228,14 +366,14 @@ describe('tempos', () => {
       endPhase(s);
       phases++;
     }
-    expect(phases).toBe(16);
+    expect(phases).toBe(12);
     expect(s.fouls.azul).toBe(0);
     expect(s.activeTeam).toBe('vermelho');
     while (!s.over && phases < 80) {
       endPhase(s);
       phases++;
     }
-    expect(phases).toBe(32);
+    expect(phases).toBe(24);
     expect(s.winner).toBe('empate');
   });
   it('goleiro que pega a bola tem de soltá-la na fase seguinte (4 segundos)', () => {

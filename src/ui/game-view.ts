@@ -2,6 +2,10 @@
 
 import {
   activatable,
+  activationsLeft,
+  duelOdds,
+  executeAction,
+  startReaction,
   applyDuel,
   beginActivation,
   bonusAction,
@@ -31,6 +35,7 @@ import {
   playerAt,
   ROLES,
   ROUNDS_PER_HALF,
+  SPRINT_COST,
   FOUL_LIMIT,
   same,
   shoot,
@@ -223,6 +228,8 @@ export class GameView {
       await fn();
       this.flush();
       await this.renderer.idle();
+      // Parou colado num defensor de prontidão: bote automático (Duelo na quadra).
+      if (this.s.pendingReaction) await this.resolveDuel(startReaction(this.s));
       if (this.s.pendingDirect) await this.directKick();
       // Depois de agir (sem bônus de drible), o jogador termina sozinho.
       const a = this.s.activation;
@@ -324,7 +331,7 @@ export class GameView {
     const s = this.s;
     const a = s.activation;
     if (!a || !this.isPlayerTurn() || getPlayer(s, a.playerId).team !== PLAYER) return false;
-    if (!activatable(s).every((p) => p.id === a.playerId)) return false;
+    if (activationsLeft(s) > 1 && !activatable(s).every((p) => p.id === a.playerId)) return false;
     // A Muralha do goleiro ainda vale na defesa; a Pedalada sem bola nem drible por perto não muda nada.
     return this.cellTargets().length === 0 && !this.shotTarget(false) && !this.shotTarget(true) && canUseSpecial(s) !== 'muralha';
   }
@@ -363,41 +370,20 @@ export class GameView {
     this.renderPanels();
   }
 
-  /** Chute de um jogador seu: canto escolhido por você, mergulho pela IA. */
+  /** Chute de bola rolando: sem palpite, a chance já aparece no botão. */
   private async playerShot(bomba: boolean): Promise<void> {
-    const s = this.s;
-    const p = getPlayer(s, s.activation!.playerId);
-    const pv = shotPreview(s, p, bomba);
-    const revealed = pv.shooterReads && !pv.open && !pv.blockerId ? chooseDive(s) : null;
-    const corner = await chooseShotCorner({
-      s,
-      shooter: p,
-      preview: pv,
-      role: 'chute',
-      title: bomba ? 'Bomba!' : 'Chute ao gol',
-      revealed,
-      cancellable: true,
-    });
-    if (!corner) return;
-    const dive = revealed ?? (pv.keeperReads ? corner : chooseDive(s));
-    shoot(s, corner, dive, bomba);
+    shoot(this.s, bomba);
   }
 
-  /** Chute da IA contra o seu goleiro: você escolhe o mergulho. */
-  private async aiShot(p: Player, bomba: boolean, direto: boolean): Promise<{ corner: Corner; dive: Corner | null }> {
+  /** Tiro livre direto da IA contra o seu goleiro: você escolhe o mergulho. */
+  private async aiDirectKick(p: Player): Promise<{ corner: Corner; dive: Corner | null }> {
     const s = this.s;
-    const pv = shotPreview(s, p, bomba, direto);
-    if (pv.blockerId || pv.open) return { corner: chooseCorner(s, pv), dive: null };
+    const pv = shotPreview(s, p, false, true);
+    if (pv.open) return { corner: chooseCorner(s, pv), dive: null };
     this.renderer.lockOn(p.id);
     await sleep(350);
     if (pv.shooterReads) {
-      const dive = await chooseShotCorner({
-        s,
-        shooter: p,
-        preview: pv,
-        role: 'defesa',
-        title: direto ? 'Tiro livre direto contra você' : `Chute de ${p.name}!`,
-      });
+      const dive = await chooseShotCorner({ s, shooter: p, preview: pv, role: 'defesa', title: 'Tiro livre direto contra você' });
       const corner = CORNERS.find((c) => shotResult(pv, c, dive) === 'gol') ?? chooseCorner(s, pv);
       return { corner, dive };
     }
@@ -407,13 +393,13 @@ export class GameView {
       shooter: p,
       preview: pv,
       role: 'defesa',
-      title: direto ? 'Tiro livre direto contra você' : `Chute de ${p.name}!`,
+      title: 'Tiro livre direto contra você',
       revealed: pv.keeperReads ? corner : null,
     });
     return { corner, dive };
   }
 
-  /** Tiro livre direto (6ª falta em diante), de qualquer um dos times. */
+  /** Tiro livre direto (da 4ª falta em diante), de qualquer um dos times. */
   private async directKick(): Promise<void> {
     const s = this.s;
     const dk = directKickPreview(s);
@@ -434,7 +420,7 @@ export class GameView {
         })) ?? 'meio';
       takeDirectKick(s, corner, revealed ?? (pv.keeperReads ? corner : chooseDive(s)));
     } else {
-      const { corner, dive } = await this.aiShot(dk.shooter, false, true);
+      const { corner, dive } = await this.aiDirectKick(dk.shooter);
       takeDirectKick(s, corner, dive);
     }
     this.flush();
@@ -466,39 +452,28 @@ export class GameView {
         break;
       }
       this.selectedId = plan.playerId;
-      const r = executePlan(s, plan);
+      let r = executePlan(s, plan);
       this.flush();
       await this.renderer.idle();
+      if (r.reaction) {
+        // Um jogador seu de prontidão deu o bote: você escolhe os lances.
+        await this.resolveDuel(r.reaction);
+        if (s.pendingDirect) continue;
+        r = executeAction(s, plan.action);
+        this.flush();
+        await this.renderer.idle();
+      }
       if (r.duel) {
         await this.resolveDuel(r.duel);
         if (s.pendingDirect) continue;
       }
-      if (r.shot) {
-        const bomba = plan.action?.kind === 'chute' && plan.action.bomba;
-        const p = getPlayer(s, plan.playerId);
-        const { corner, dive } = await this.aiShot(p, bomba, false);
-        shoot(s, corner, dive, bomba);
-        this.flush();
-        await this.renderer.idle();
-        this.renderer.lockOn(null);
-      }
       if (s.activation && s.activeTeam === AI) {
         if (s.activation.bonus) {
           await sleep(200);
-          const follow = bonusAction(s, diff);
-          if (follow?.kind === 'passe') {
-            const out = pass(s, follow.toId, follow.alto);
-            this.flush();
-            await this.renderer.idle();
-            if (out.duel) await this.resolveDuel(out.duel);
-          } else if (follow?.kind === 'chute') {
-            const p = getPlayer(s, s.activation.playerId);
-            const { corner, dive } = await this.aiShot(p, follow.bomba, false);
-            shoot(s, corner, dive, follow.bomba);
-            this.flush();
-            await this.renderer.idle();
-            this.renderer.lockOn(null);
-          }
+          const out = executeAction(s, bonusAction(s, diff === 'craque' ? 'veterano' : diff));
+          this.flush();
+          await this.renderer.idle();
+          if (out.duel) await this.resolveDuel(out.duel);
         }
         if (s.pendingDirect) continue;
         if (s.activation) endActivation(s);
@@ -633,7 +608,17 @@ export class GameView {
     for (const t of all) {
       if (t.kind === 'drible' || t.kind === 'desarme' || t.kind === 'carrinho') {
         const q = getPlayer(s, t.targetId);
-        const label = t.kind === 'drible' ? `Driblar ${q.name}` : t.kind === 'desarme' ? `Desarmar ${q.name}` : `Carrinho em ${q.name}`;
+        // As chances aproximadas aparecem antes de começar o Duelo.
+        const me = getPlayer(s, s.activation!.playerId);
+        const pct = (v: number) => `${Math.round(v * 100)}%`;
+        let label: string;
+        if (t.kind === 'drible') {
+          const o = duelOdds(s, me, q, false);
+          label = `Driblar ${q.name} · passa ~${pct(o.ballWins)} · perde ~${pct(o.markWins)} · falta ~${pct(o.foul)}`;
+        } else {
+          const o = duelOdds(s, q, me, true, t.kind === 'carrinho' ? 1 : 0);
+          label = `${t.kind === 'desarme' ? 'Desarmar' : 'Carrinho em'} ${q.name} · rouba ~${pct(o.markWins)} · falta ~${pct(o.foul)}`;
+        }
         out.push({
           pos: q,
           target: t,
@@ -666,11 +651,18 @@ export class GameView {
       const targets = this.cellTargets();
       hl.targets = targets.map((t) => t.mark);
       const p = getPlayer(s, s.activation.playerId);
+      if (s.holder === p.id) {
+        // Casas onde quem tem a bola pararia colado num defensor de prontidão (bote automático).
+        const ready = s.players.filter((q) => q.team !== PLAYER && q.ready && !q.unbalanced);
+        hl.dangerMoves = hl.moves.filter((m) => ready.some((q) => Math.max(Math.abs(q.x - m.x), Math.abs(q.y - m.y)) === 1));
+      }
       if (s.holder === p.id && canAct(s)) {
         for (const q of s.players) {
           if (q.team === PLAYER || q.unbalanced || this.mode === 'alto') continue;
-          for (let dx = -1; dx <= 1; dx++)
-            for (let dy = -1; dy <= 1; dy++)
+          // De prontidão, o defensor corta a 2 casas da linha.
+          const r = q.ready ? 2 : 1;
+          for (let dx = -r; dx <= r; dx++)
+            for (let dy = -r; dy <= r; dy++)
               if (q.x + dx >= 0 && q.y + dy >= 0 && q.x + dx < s.width && q.y + dy < s.height) hl.cutZones.push({ x: q.x + dx, y: q.y + dy });
         }
         if (this.shotTarget(false) || this.shotTarget(true)) hl.shot = { team: PLAYER, text: '' };
@@ -875,7 +867,7 @@ export class GameView {
         'div',
         {
           class: 'fouls',
-          title: 'Faltas no tempo (a 6ª vira tiro livre direto)',
+          title: `Faltas no tempo (da ${FOUL_LIMIT}ª em diante, tiro livre direto)`,
         },
         h('span', {}, 'faltas'),
         dots,
@@ -979,12 +971,18 @@ export class GameView {
       );
     }
     if (!a || getPlayer(s, a.playerId).team !== PLAYER) {
-      const free = activatable(s).filter((p) => p.team === PLAYER);
+      const left = activationsLeft(s);
+      const withBall = s.activationsMax > 3;
       return h(
         'div',
         { class: 'action-card' },
-        h('b', {}, 'Sua fase'),
-        h('div', { class: 'sub' }, `${free.length} jogador(es) ainda podem jogar. Escolha um (1–5, Tab ou clique).`),
+        h('b', {}, withBall ? 'Sua fase · com a bola' : 'Sua fase · sem a bola'),
+        h(
+          'div',
+          { class: 'sub' },
+          `Ainda pode ativar ${left} de ${s.activationsMax} jogador(es). Escolha um (1–5, Tab ou clique).` +
+            (withBall ? '' : ' Quem não for ativado fica de prontidão: corta passe mais longe e dá bote em quem parar colado.'),
+        ),
         h('div', { class: 'btns' }, h('button', { onclick: () => this.endPlayerPhase() }, 'E · Encerrar fase')),
       );
     }
@@ -1002,6 +1000,13 @@ export class GameView {
           ? 'Andou. Agora pode agir.'
           : 'Ande e depois aja (ou só aja).';
     const pct = (t: Target & { kind: 'chute' }) => Math.round(goalChance(t.preview) * 100);
+    const shotTitle = (t: (Target & { kind: 'chute' }) | undefined) => {
+      if (!t) return 'Longe demais do gol';
+      const pv = t.preview;
+      const cover = { fechado: 'goleiro bem colocado', normal: 'goleiro no lugar', deslocado: 'goleiro fora do ângulo', fora: 'gol vazio' }[pv.cover];
+      return `Força ${pv.force} contra reflexo ${pv.refEff} · ${cover}${pv.wide ? ' · ângulo fechado' : ''}${pv.blockerId ? ' · defensor na linha' : ''}`;
+    };
+    const ctx = `Jogador ${s.activationsUsed + 1} de ${s.activationsMax}${s.activationsMax > 3 ? '' : ` · desarmes ${s.tacklesUsed}/1`}`;
     return h(
       'div',
       { class: `action-card ${p.team}` },
@@ -1018,7 +1023,7 @@ export class GameView {
           h('span', {}, h('i', {}, k), String([def.mov, def.pas, def.dom, def.hab, def.fin, def.mar][i])),
         ),
       ),
-      h('div', { class: 'sub' }, `Fôlego ${p.fol}/${def.fol} · HAB ${p.hab}/${def.hab}`),
+      h('div', { class: 'sub' }, `Fôlego ${p.fol}/${def.fol}${p.fol < 2 ? ' (cansado: −1 lance)' : ''} · HAB ${p.hab}/${def.hab} · ${ctx}`),
       h('div', { class: 'notice' }, status),
       h(
         'div',
@@ -1028,7 +1033,7 @@ export class GameView {
           {
             disabled: !canSprint(s),
             onclick: () => this.doSprint(),
-            title: '+2 casas de movimento por 2 de fôlego',
+            title: `+2 casas de movimento por ${SPRINT_COST} de fôlego`,
           },
           a.sprinted ? 'Arrancando!' : 'R · Arrancada',
         ),
@@ -1038,19 +1043,26 @@ export class GameView {
               {
                 class: this.mode === 'alto' ? 'on' : '',
                 onclick: () => this.toggleAlto(),
-                title: 'Passe por cima: +2 de alcance, ignora quem corta, mas a recepção é mais disputada',
+                title:
+                  'Passe por cima: +1 de alcance, ignora quem corta, custa 1 de fôlego; qualquer defensor a 2 casas disputa a recepção e quem recebe não chuta nem dribla nesta fase',
               },
               `A · Passe ${this.mode === 'alto' ? 'alto ✓' : 'alto'}`,
             )
           : null,
-        hasBall ? h('button', { disabled: !shot, onclick: () => this.doShot(false) }, shot ? `C · Chutar (${pct(shot)}%)` : 'C · Chutar (longe)') : null,
+        hasBall
+          ? h(
+              'button',
+              { disabled: !shot, onclick: () => this.doShot(false), title: shotTitle(shot) },
+              shot ? `C · Chutar (${pct(shot)}%)` : 'C · Chutar (longe)',
+            )
+          : null,
         p.role === 'pivo' && hasBall
           ? h(
               'button',
               {
                 disabled: !bomba,
                 onclick: () => this.doShot(true),
-                title: def.specialText,
+                title: `${def.specialText} · ${shotTitle(bomba)}`,
               },
               bomba ? `B · Bomba (${pct(bomba)}%)` : 'B · Bomba',
             )

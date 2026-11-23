@@ -50,6 +50,8 @@ export interface Highlights {
   } | null;
   /** Casas onde o adversário corta passe rasteiro. */
   cutZones: Pos[];
+  /** Destinos em que quem tem a bola sofre bote automático de um defensor de prontidão. */
+  dangerMoves: Pos[];
   /** Chute sob o cursor: mostra o gol alvo e a chance. */
   shot: { team: Team; text: string } | null;
   selectedId: string | null;
@@ -63,6 +65,7 @@ export const emptyHighlights = (): Highlights => ({
   targets: [],
   passLine: null,
   cutZones: [],
+  dangerMoves: [],
   shot: null,
   selectedId: null,
   activeId: null,
@@ -476,7 +479,8 @@ export class Renderer {
     const blocker = e.blockerId ? this.d(e.blockerId) : null;
     let end = tgt;
     if (e.result === 'bloqueio' && blocker) end = { x: blocker.x, y: blocker.y, h: 6 };
-    if (e.result === 'defesa' && keeper && e.dive) {
+    const rebounder = e.result === 'rebote' && e.reboundId ? this.d(e.reboundId) : null;
+    if ((e.result === 'defesa' || e.result === 'rebote') && keeper && e.dive) {
       const dp = this.goalPoint(e.team, e.dive);
       end = { x: e.team === 'azul' ? COURT_W - 0.5 : 0.5, y: dp.y, h: 12 };
     }
@@ -537,6 +541,17 @@ export class Renderer {
               y: end.y,
               t0: performance.now(),
             };
+        } else if (rebounder) {
+          // O goleiro espalma e a bola sobra viva na área.
+          const from = { x: end.x, y: end.y };
+          this.ball.x = from.x + (rebounder.x - from.x) * t;
+          this.ball.y = from.y + (rebounder.y - from.y) * t;
+          this.ball.h = Math.sin(Math.PI * t) * 14;
+          this.ball.spin += 0.8;
+          if (keeper && t > 0.4) {
+            keeper.rot *= 0.85;
+            keeper.h *= 0.8;
+          }
         } else if (e.result === 'defesa' && keeper) {
           this.ball.x = keeper.x;
           this.ball.y = keeper.y;
@@ -567,6 +582,15 @@ export class Renderer {
             color: '#ffe14d',
             t0: performance.now(),
             dur: 900,
+            big: false,
+          });
+        } else if (e.result === 'rebote') {
+          this.ball.owner = e.reboundId ?? null;
+          this.banners.push({
+            text: 'Rebote!',
+            color: '#7dd8ff',
+            t0: performance.now(),
+            dur: 800,
             big: false,
           });
         } else if (e.result === 'bloqueio') {
@@ -1763,7 +1787,10 @@ export class Renderer {
       const wave = 0.5 + 0.5 * Math.sin(now / 420 - dist * 0.75);
       const fill = (0.2 + 0.14 * wave) * k;
       const line = (0.4 + 0.4 * wave) * k;
-      this.poly(ctx, pts, `rgba(60,150,255,${fill.toFixed(3)})`, `rgba(180,225,255,${line.toFixed(3)})`, 1 + wave * 0.7);
+      // Casa vigiada por um defensor de prontidão: quem para ali sofre o bote.
+      const danger = h.dangerMoves.some((d) => d.x === c.x && d.y === c.y);
+      if (danger) this.poly(ctx, pts, `rgba(255,120,40,${(fill * 1.1).toFixed(3)})`, `rgba(255,190,120,${line.toFixed(3)})`, 1 + wave * 0.7);
+      else this.poly(ctx, pts, `rgba(60,150,255,${fill.toFixed(3)})`, `rgba(180,225,255,${line.toFixed(3)})`, 1 + wave * 0.7);
       // Clarão ao surgir, que se apaga em seguida.
       if (k < 1) this.poly(ctx, pts, `rgba(235,248,255,${(0.55 * (1 - k)).toFixed(3)})`);
       // Brilho que pulsa no centro da casa, mais forte no auge da onda.
