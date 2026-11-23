@@ -206,6 +206,9 @@ export class Renderer {
   private cheer = 0;
   private duelFx: DuelFx | null = null;
   private flashT = 0;
+  /** Quando as casas de movimento atuais apareceram (para a animação de entrada). */
+  private movesKey = '';
+  private movesT0 = 0;
 
   constructor(
     readonly canvas: HTMLCanvasElement,
@@ -1548,10 +1551,60 @@ export class Renderer {
     return c;
   }
 
+  /**
+   * Casas de movimento: surgem em onda a partir do jogador (crescendo com um brilho) e depois
+   * ficam oscilando de leve, numa ondulação que sai dele.
+   */
+  private drawMoves(s: GameState, h: Highlights, now: number): void {
+    const ctx = this.ctx;
+    if (!h.moves.length) {
+      this.movesKey = '';
+      return;
+    }
+    const key = h.moves.map((c) => `${c.x},${c.y}`).join(';');
+    if (key !== this.movesKey) {
+      this.movesKey = key;
+      this.movesT0 = now;
+    }
+    const who = h.activeId ? s.players.find((p) => p.id === h.activeId) : undefined;
+    const ox = who?.x ?? h.moves[0].x;
+    const oy = who?.y ?? h.moves[0].y;
+    for (const c of h.moves) {
+      const dist = Math.abs(c.x - ox) + Math.abs(c.y - oy);
+      const t = (now - this.movesT0 - dist * 45) / 260;
+      if (t <= 0) continue;
+      const k = Math.min(1, t);
+      // Entrada com um leve "salto" (passa um pouco do tamanho e volta).
+      const grow = k < 1 ? 1 - Math.pow(1 - k, 3) * Math.cos(k * 4) : 1;
+      const center = this.P(c.x + 0.5, c.y + 0.5);
+      const pts = this.quad(c.x, c.y).map((q) => ({ x: center.x + (q.x - center.x) * grow, y: center.y + (q.y - center.y) * grow }));
+      const wave = 0.5 + 0.5 * Math.sin(now / 420 - dist * 0.75);
+      const fill = (0.2 + 0.14 * wave) * k;
+      const line = (0.4 + 0.4 * wave) * k;
+      this.poly(ctx, pts, `rgba(60,150,255,${fill.toFixed(3)})`, `rgba(180,225,255,${line.toFixed(3)})`, 1 + wave * 0.7);
+      // Clarão ao surgir, que se apaga em seguida.
+      if (k < 1) this.poly(ctx, pts, `rgba(235,248,255,${(0.55 * (1 - k)).toFixed(3)})`);
+      // Brilho que pulsa no centro da casa, mais forte no auge da onda.
+      if (wave > 0.35) {
+        // Luz somada ao piso (clareia de verdade, sem acinzentar).
+        const a = (wave - 0.35) * 0.42 * k;
+        const g = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, 17);
+        g.addColorStop(0, `rgba(90,170,255,${a.toFixed(3)})`);
+        g.addColorStop(1, 'rgba(90,170,255,0)');
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        this.poly(ctx, pts, undefined);
+        ctx.fillStyle = g;
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
   private drawHighlights(s: GameState, h: Highlights, now: number): void {
     const ctx = this.ctx;
     for (const c of h.cutZones) this.poly(ctx, this.quad(c.x, c.y), 'rgba(214,58,47,0.14)');
-    for (const c of h.moves) this.poly(ctx, this.quad(c.x, c.y), 'rgba(80,170,255,0.32)', 'rgba(170,215,255,0.55)', 1);
+    this.drawMoves(s, h, now);
     if (h.passLine) {
       const a = this.P(h.passLine.from.x + 0.5, h.passLine.from.y + 0.5);
       const b = this.P(h.passLine.to.x + 0.5, h.passLine.to.y + 0.5);
