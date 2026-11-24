@@ -1,6 +1,6 @@
 // Gráfico de radar (teia) com os atributos de um jogador, em SVG.
 
-import { ROLES } from '../core';
+import { statsOf } from '../core';
 import type { Player } from '../core';
 import { ROLE_BADGE } from './roles';
 
@@ -18,7 +18,7 @@ export const RADAR_AXES = [
 ] as const;
 
 export function radarValues(p: Player): number[] {
-  const d = ROLES[p.role];
+  const d = statsOf(p);
   return RADAR_AXES.map((a) => d[a.key] + (a.key === 'ref' && p.muralha ? 2 : 0));
 }
 

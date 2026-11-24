@@ -1,6 +1,6 @@
 // Janela de informações de um jogador (quando o mouse para em cima dele na quadra ou no cartão).
 
-import { ROLES, TEAM_NAME, WEIGHT_LABEL } from '../core';
+import { hasSpecial, statsOf, TEAM_NAME, TRAITS, WEIGHT_LABEL } from '../core';
 import type { GameState, Player } from '../core';
 import { clear, h } from './dom';
 import { radarChart } from './radar';
@@ -30,7 +30,7 @@ function tipEl(): HTMLElement {
 }
 
 function content(s: GameState, p: Player, opts: TipOptions): HTMLDivElement[] {
-  const d = ROLES[p.role];
+  const d = statsOf(p);
   const badge = ROLE_BADGE[p.role];
   const stat = (k: string, v: number, tip: string) => h('span', { title: tip }, h('i', {}, k), String(v));
   const bar = (label: string, v: number, max: number, cls: string) =>
@@ -50,6 +50,8 @@ function content(s: GameState, p: Player, opts: TipOptions): HTMLDivElement[] {
     if (p.muralha) status.push(['🧱', 'Muralha ativa: reflexo +2']);
     if (p.pedalada) status.push(['🌀', 'Pedalada pronta: +1 Leitura e fintas sem HAB no próximo Duelo']);
     if (s.activeTeam === p.team && p.activated && !s.over) status.push(['✓', 'Já jogou nesta fase']);
+    if (p.tabela && s.activeTeam === p.team) status.push(['↩', 'Tabela: pode jogar de novo (anda 2 e chuta ou passa)']);
+    if (p.escoraPronta && !s.escoraUsed && s.activeTeam === p.team && s.holder === p.id) status.push(['↩', 'Escora: pode devolver de primeira']);
     if (p.energetico) status.push(['🧃', 'Energético guardado (G): fôlego e HAB cheios e +2 casas']);
     if (p.goals) status.push(['🥅', `${p.goals} gol${p.goals > 1 ? 's' : ''} na partida`]);
   }
@@ -74,6 +76,15 @@ function content(s: GameState, p: Player, opts: TipOptions): HTMLDivElement[] {
       ),
     ),
     h('div', { class: 'tt-blurb' }, d.blurb),
+    p.trait
+      ? h(
+          'div',
+          { class: 'tt-trait' },
+          h('b', {}, `◈ ${TRAITS[p.trait].name}`),
+          h('div', { class: 'plus' }, '+ ', TRAITS[p.trait].plus),
+          h('div', { class: 'minus' }, '− ', TRAITS[p.trait].minus),
+        )
+      : null,
     h(
       'div',
       { class: 'stats' },
@@ -87,13 +98,15 @@ function content(s: GameState, p: Player, opts: TipOptions): HTMLDivElement[] {
     ),
     bar('Fôlego', p.fol, d.fol, 'fol'),
     bar('HAB', p.hab, d.hab, 'hab'),
-    h(
-      'div',
-      { class: `tt-special${p.specialUsed ? ' used' : ''}` },
-      h('b', {}, `★ ${d.special}`),
-      p.specialUsed ? ' (já usado neste tempo)' : '',
-      h('div', {}, d.specialText),
-    ),
+    p.trait === 'pulmao' || p.trait === 'goleiroPes'
+      ? null
+      : h(
+          'div',
+          { class: `tt-special${hasSpecial(p) ? '' : ' used'}` },
+          h('b', {}, `★ ${d.special}`),
+          hasSpecial(p) ? '' : ' (já usado neste tempo)',
+          h('div', {}, d.specialText),
+        ),
     status.length
       ? h(
           'div',

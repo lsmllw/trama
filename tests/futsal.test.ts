@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   absRound,
+  assignTraits,
+  statsOf,
+  extraMode,
+  hasSpecial,
+  sprint,
+  ROLES,
   activationsLeft,
   cutRange,
   moveRange,
@@ -38,7 +44,7 @@ import {
   takeDirectKick,
   teamPlayers,
 } from '../src/core';
-import type { GameState, Player } from '../src/core';
+import type { GameState, Player, Trait } from '../src/core';
 
 const byName = (s: GameState, name: string): Player => s.players.find((p) => p.name === name)!;
 /** Tira todos de perto e põe só quem interessa. */
@@ -612,5 +618,159 @@ describe('estilos de jogo', () => {
     expect(s.activationsMax).toBe(3);
     setStyle(s, 'vermelho', 'bloco');
     expect(s.activationsMax).toBe(2);
+  });
+});
+
+describe('características', () => {
+  const give = (s: GameState, name: string, trait: Trait) => {
+    const p = byName(s, name);
+    const others = s.players.filter((q) => q.team === p.team && q.trait && q.id !== p.id).map((q) => ({ playerId: q.id, trait: q.trait! }));
+    assignTraits(s, p.team, [...others, { playerId: p.id, trait }]);
+    return p;
+  };
+  it('mudam os atributos e só valem na posição certa', () => {
+    const s = createGame({ seed: 1, styles: { azul: 'posse' } });
+    const dudu = give(s, 'Dudu', 'alaVelocista');
+    expect(statsOf(dudu).dom).toBe(4);
+    expect(() => assignTraits(s, 'azul', [{ playerId: byName(s, 'Marreta').id, trait: 'fixoXerife' }])).toThrow();
+    expect(() =>
+      assignTraits(
+        s,
+        'azul',
+        ['Dudu', 'Teco', 'Rafa'].map((n, i) => ({ playerId: byName(s, n).id, trait: (['alaDriblador', 'alaVelocista', 'fixoArmador'] as Trait[])[i] })),
+      ),
+    ).toThrow(); // 3 só no Equilíbrio
+  });
+  it('Ala velocista: arrancada mais barata e mais longa', () => {
+    const s = createGame({ seed: 1 });
+    const dudu = give(s, 'Dudu', 'alaVelocista');
+    beginActivation(s, dudu.id);
+    const fol = dudu.fol;
+    expect(moveRange(s, dudu, true) - moveRange(s, dudu, false)).toBe(3);
+    sprint(s);
+    expect(dudu.fol).toBe(fol - 2);
+  });
+  it('Equilíbrio leva 3, e a 3ª sai se o time trocar de estilo', () => {
+    const s = createGame({ seed: 1 });
+    const picks = (['Dudu', 'Rafa', 'Marreta'] as const).map((n, i) => ({
+      playerId: byName(s, n).id,
+      trait: (['alaDriblador', 'fixoArmador', 'pulmao'] as Trait[])[i],
+    }));
+    assignTraits(s, 'azul', picks);
+    expect(byName(s, 'Marreta').trait).toBe('pulmao');
+    expect(statsOf(byName(s, 'Marreta')).fol).toBe(ROLES.pivo.fol + 3);
+    setStyle(s, 'azul', 'posse');
+    expect(byName(s, 'Marreta').trait).toBe(null);
+    expect(byName(s, 'Dudu').trait).toBe('alaDriblador');
+  });
+  it('Pivô de costas: escora de primeira e tabela com quem passou', () => {
+    const s = createGame({ seed: 1, styles: { azul: 'posse' } });
+    clearCourt(s);
+    const piv = give(s, 'Marreta', 'pivoCostas');
+    const dudu = byName(s, 'Dudu');
+    piv.x = 15;
+    piv.y = 5;
+    dudu.x = 13;
+    dudu.y = 5;
+    s.holder = piv.id;
+    // O pivô joga primeiro (passa para o Dudu)...
+    beginActivation(s, piv.id);
+    pass(s, dudu.id, false);
+    endActivation(s);
+    // ...o Dudu devolve: o pivô já jogou, mas pode escorar.
+    beginActivation(s, dudu.id);
+    pass(s, piv.id, false);
+    endActivation(s);
+    expect(extraMode(s, piv)).toBe('escora');
+    const used = s.activationsUsed;
+    beginActivation(s, piv.id);
+    expect(destinations(s)).toHaveLength(0);
+    expect(currentTargets(s).every((t) => t.kind === 'passe' && !t.alto)).toBe(true);
+    pass(s, dudu.id, false);
+    endActivation(s);
+    expect(s.activationsUsed).toBe(used); // a escora não conta
+    // Devolveu para quem passou: tabela!
+    expect(extraMode(s, dudu)).toBe('tabela');
+    beginActivation(s, dudu.id);
+    expect(Math.max(...destinations(s).map((c) => Math.abs(c.x - dudu.x) + Math.abs(c.y - dudu.y)))).toBe(2);
+    expect(currentTargets(s).some((t) => t.kind === 'chute')).toBe(true);
+    expect(currentTargets(s).some((t) => t.kind === 'drible')).toBe(false);
+  });
+  it('Fixo xerife: bote +2, e a falta dele conta dobrado', () => {
+    const s = createGame({ seed: 1 });
+    clearCourt(s);
+    const tonhao = give(s, 'Tonhão', 'fixoXerife');
+    tonhao.ready = true;
+    expect(cutRange(s, tonhao)).toBe(2);
+    const dudu = byName(s, 'Dudu');
+    dudu.x = 10;
+    dudu.y = 5;
+    tonhao.x = 11;
+    tonhao.y = 5;
+    s.holder = dudu.id;
+    s.pendingReaction = tonhao.id;
+    const cs = startReaction(s);
+    expect(cs.atk.notes.some((n) => n.includes('xerife +2'))).toBe(true);
+    // Bote contra Proteger é falta.
+    while (!cs.done) resolveTempo(s, cs, 'golpe', 'guarda');
+    applyDuel(s, cs);
+    expect(s.fouls.vermelho).toBe(2);
+  });
+  it('Fixo armador: passe alto mais longo e sem custo', () => {
+    const s = createGame({ seed: 1 });
+    clearCourt(s);
+    const rafa = give(s, 'Rafa', 'fixoArmador');
+    const piv = byName(s, 'Marreta');
+    rafa.x = 4;
+    rafa.y = 5;
+    piv.x = 13; // 9 casas: PAS 7 + 2 (o alto normal vai até 8)
+    piv.y = 5;
+    s.holder = rafa.id;
+    expect(passPreview(s, rafa, piv, true).ok).toBe(true);
+    const [tonhao, bigode] = [byName(s, 'Tonhão'), byName(s, 'Bigode')];
+    Object.assign(tonhao, { x: 4, y: 8 });
+    Object.assign(bigode, { x: 13, y: 8 });
+    expect(passPreview(s, tonhao, bigode, true).ok).toBe(false);
+    beginActivation(s, rafa.id);
+    const fol = rafa.fol;
+    pass(s, piv.id, true);
+    expect(rafa.fol).toBe(fol);
+  });
+  it('Goleiro com os pés sai da área sem a regra dos 4 segundos; o paredão é forte de perto e fraco de longe', () => {
+    const s = createGame({ seed: 1 });
+    clearCourt(s);
+    const gui = give(s, 'Gui', 'goleiroPes');
+    gui.x = 6;
+    gui.y = 5;
+    s.holder = gui.id;
+    endPhase(s);
+    endPhase(s);
+    expect(s.keeperMustPass).toBe(null);
+    expect(hasSpecial(gui)).toBe(false);
+    const s2 = createGame({ seed: 1 });
+    const biel = give(s2, 'Biel', 'goleiroParedao');
+    expect(hasSpecial(biel)).toBe(true);
+    clearCourt(s2);
+    const piv = byName(s2, 'Marreta');
+    Object.assign(piv, { x: 17, y: 4 });
+    s2.holder = piv.id;
+    const near = shotPreview(s2, piv);
+    Object.assign(piv, { x: 12, y: 4 });
+    const far = shotPreview(s2, piv);
+    expect(near.ref).toBe(ROLES.goleiro.ref + 1);
+    expect(far.ref).toBe(ROLES.goleiro.ref - 1);
+  });
+  it('Ala driblador começa o Duelo com a bola com 1 Leitura', () => {
+    const s = createGame({ seed: 1 });
+    clearCourt(s);
+    const dudu = give(s, 'Dudu', 'alaDriblador');
+    const lelo = byName(s, 'Lelo');
+    dudu.x = 10;
+    dudu.y = 5;
+    lelo.x = 11;
+    lelo.y = 5;
+    s.holder = dudu.id;
+    const cs = startDuel(s, 'drible', dudu.id, lelo.id);
+    expect(cs.atk.readsLeft).toBe(1);
   });
 });

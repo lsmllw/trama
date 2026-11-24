@@ -2,6 +2,8 @@
 
 import {
   activatable,
+  assignTraits,
+  chooseTraits,
   chooseStyle,
   cutRange,
   setStyle,
@@ -40,7 +42,12 @@ import {
   playerAt,
   ROLES,
   ROUNDS_PER_HALF,
-  SPRINT_COST,
+  sprintBonus,
+  sprintCost,
+  statsOf,
+  extraMode,
+  hasSpecial,
+  TRAITS,
   FOUL_LIMIT,
   same,
   shoot,
@@ -56,7 +63,7 @@ import {
   useSpecial,
   useDrink,
 } from '../core';
-import type { Corner, Difficulty, DuelState, GameState, LanceMemory, Player, Pos, Style, Target, Team } from '../core';
+import type { Corner, Difficulty, DuelState, GameState, LanceMemory, Player, Pos, Style, Target, Team, Trait } from '../core';
 import { clear, h } from './dom';
 import { runInlineDuel } from './duel-inline';
 import { emptyHighlights, Renderer } from './renderer';
@@ -69,6 +76,7 @@ import { hideTip, showPlayerTip } from './tooltip';
 export interface MatchConfig {
   difficulty: Difficulty;
   style: Style;
+  traits?: { playerId: string; trait: Trait }[];
   seed: number;
 }
 
@@ -113,6 +121,8 @@ export class GameView {
     this.s = createGame({ seed: config.seed, styles: { azul: config.style ?? 'equilibrio' } });
     // A IA escolhe o plano dela às cegas; os dois são revelados no apito inicial.
     this.s.styles[AI] = chooseStyle(this.s, AI, config.difficulty);
+    assignTraits(this.s, PLAYER, config.traits ?? []);
+    assignTraits(this.s, AI, chooseTraits(this.s, AI, config.difficulty));
     this.s.log.push(`Planos de jogo: Azul em ${STYLES[this.s.styles.azul].name} × Vermelho em ${STYLES[this.s.styles.vermelho].name}.`);
     this.s.events.push({ kind: 'apito', text: `${STYLES[this.s.styles.azul].name} × ${STYLES[this.s.styles.vermelho].name}` });
   }
@@ -511,7 +521,7 @@ export class GameView {
     const s = this.s;
     if (this.busy) return;
     const p = getPlayer(s, id);
-    if (this.isPlayerTurn() && p.team === PLAYER && !p.activated && s.activation?.playerId !== id) {
+    if (this.isPlayerTurn() && p.team === PLAYER && activatable(s).some((q) => q.id === id) && s.activation?.playerId !== id) {
       if (s.activation && (s.activation.moved || s.activation.acted)) endActivation(s);
       beginActivation(s, id);
       this.mode = 'normal';
@@ -890,7 +900,13 @@ export class GameView {
     };
     const styleTag = (t: Team) => {
       const d = STYLES[s.styles[t]];
-      return h('div', { class: 'style-tag', title: `${d.name}\n+ ${d.plus}\n− ${d.minus}` }, d.name);
+      const tr = s.players.filter((p) => p.team === t && p.trait).map((p) => `◈ ${TRAITS[p.trait!].name} (${p.name})`);
+      return h(
+        'div',
+        { class: 'style-tag', title: [`${d.name}`, `+ ${d.plus}`, `− ${d.minus}`, ...tr].join('\n') },
+        d.name,
+        tr.length ? ` · ◈${tr.length}` : '',
+      );
     };
     const turn = s.over ? 'Fim de jogo' : s.activeTeam === PLAYER ? 'Sua vez' : 'Vez do Vermelho (IA)';
     clear(this.el.top);
@@ -915,8 +931,9 @@ export class GameView {
 
   private card(p: Player, index: number | null): HTMLElement {
     const s = this.s;
-    const def = ROLES[p.role];
+    const def = statsOf(p);
     const isActive = s.activation?.playerId === p.id;
+    const extra = s.activeTeam === p.team ? extraMode(s, p) : null;
     const tags: string[] = [];
     if (s.holder === p.id) tags.push('⚽');
     if (p.unbalanced) tags.push('💫');
@@ -928,7 +945,7 @@ export class GameView {
     return h(
       'div',
       {
-        class: `pcard ${p.team}${isActive ? ' active' : ''}${p.activated && s.activeTeam === p.team ? ' done' : ''}${this.selectedId === p.id ? ' sel' : ''}`,
+        class: `pcard ${p.team}${isActive ? ' active' : ''}${p.activated && s.activeTeam === p.team && !extra ? ' done' : ''}${this.selectedId === p.id ? ' sel' : ''}`,
         onclick: () => (p.team === PLAYER ? this.selectOwn(p.id) : ((this.selectedId = p.id), this.renderPanels())),
         onmouseenter: (e: MouseEvent) => {
           const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -948,7 +965,14 @@ export class GameView {
           `#${p.number} ${p.name}`,
           h('span', { class: 'tags' }, tags.join(' ')),
         ),
-        h('div', { class: 'prole' }, `${def.name} · ${p.specialUsed ? `${def.special} usado` : def.special}`),
+        h(
+          'div',
+          { class: 'prole' },
+          `${def.name} · `,
+          p.trait ? h('span', { class: 'ptrait', title: `${TRAITS[p.trait].plus}\n− ${TRAITS[p.trait].minus}` }, TRAITS[p.trait].name) : null,
+          p.trait === 'pulmao' || p.trait === 'goleiroPes' ? '' : `${p.trait ? ' · ' : ''}${hasSpecial(p) ? def.special : `${def.special} usado`}`,
+          extra ? h('span', { class: 'ptrait on' }, extra === 'escora' ? ' ↩ escora' : ' ↩ tabela') : null,
+        ),
         h('div', { class: 'bars' }, bar(p.fol, def.fol, 'fol'), bar(p.hab, def.hab, 'hab')),
       ),
     );
@@ -1006,18 +1030,23 @@ export class GameView {
       );
     }
     const p = getPlayer(s, a.playerId);
-    const def = ROLES[p.role];
+    const def = statsOf(p);
     const hasBall = s.holder === p.id;
     const shot = this.shotTarget(false);
     const bomba = this.shotTarget(true);
     const special = canUseSpecial(s);
-    const status = a.bonus
-      ? 'Drible vencido! Ainda pode passar ou chutar.'
-      : a.acted
-        ? 'Já agiu.'
-        : a.moved
-          ? 'Andou. Agora pode agir.'
-          : 'Ande e depois aja (ou só aja).';
+    const status =
+      a.mode === 'escora'
+        ? 'Escora: devolva de primeira com um passe rasteiro (sem andar).'
+        : a.mode === 'tabela' && !a.acted
+          ? 'Tabela! Anda até 2 casas e chuta ou passa.'
+          : a.bonus
+            ? 'Drible vencido! Ainda pode passar ou chutar.'
+            : a.acted
+              ? 'Já agiu.'
+              : a.moved
+                ? 'Andou. Agora pode agir.'
+                : 'Ande e depois aja (ou só aja).';
     const pct = (t: Target & { kind: 'chute' }) => Math.round(goalChance(t.preview) * 100);
     const shotTitle = (t: (Target & { kind: 'chute' }) | undefined) => {
       if (!t) return 'Longe demais do gol';
@@ -1053,16 +1082,18 @@ export class GameView {
       h(
         'div',
         { class: 'btns' },
-        h(
-          'button',
-          {
-            disabled: !canSprint(s),
-            onclick: () => this.doSprint(),
-            title: `+2 casas de movimento por ${SPRINT_COST} de fôlego`,
-          },
-          a.sprinted ? 'Arrancando!' : 'R · Arrancada',
-        ),
-        hasBall && canAct(s)
+        a.mode !== 'normal'
+          ? null
+          : h(
+              'button',
+              {
+                disabled: !canSprint(s),
+                onclick: () => this.doSprint(),
+                title: `+${sprintBonus(p)} casas de movimento por ${sprintCost(p)} de fôlego`,
+              },
+              a.sprinted ? 'Arrancando!' : 'R · Arrancada',
+            ),
+        hasBall && canAct(s) && a.mode !== 'escora'
           ? h(
               'button',
               {
@@ -1074,14 +1105,14 @@ export class GameView {
               `A · Passe ${this.mode === 'alto' ? 'alto ✓' : 'alto'}`,
             )
           : null,
-        hasBall
+        hasBall && a.mode !== 'escora'
           ? h(
               'button',
               { disabled: !shot, onclick: () => this.doShot(false), title: shotTitle(shot) },
               shot ? `C · Chutar (${pct(shot)}%)` : 'C · Chutar (longe)',
             )
           : null,
-        p.role === 'pivo' && hasBall
+        p.role === 'pivo' && hasBall && hasSpecial(p) && a.mode === 'normal'
           ? h(
               'button',
               {
@@ -1092,7 +1123,7 @@ export class GameView {
               bomba ? `B · Bomba (${pct(bomba)}%)` : 'B · Bomba',
             )
           : null,
-        p.role === 'goleiro' || p.role === 'ala'
+        (p.role === 'goleiro' || p.role === 'ala') && p.trait !== 'pulmao' && p.trait !== 'goleiroPes' && a.mode === 'normal'
           ? h(
               'button',
               {
@@ -1131,7 +1162,7 @@ export class GameView {
       const occ = playerAt(s, this.hover.x, this.hover.y);
       if (t && this.isPlayerTurn()) text = `${t.mark.label} — clique ou Espaço`;
       else if (occ) {
-        const d = ROLES[occ.role];
+        const d = statsOf(occ);
         text = `${occ.name} (${TEAM_NAME[occ.team]}) · ${d.name} · fôlego ${occ.fol}/${d.fol} · HAB ${occ.hab}/${d.hab}${occ.unbalanced ? ' · desequilibrado' : ''}`;
       } else if (this.hl.moves.some((m) => same(m, this.hover!))) text = 'Andar até aqui — clique ou Espaço';
     }
@@ -1199,6 +1230,13 @@ export class GameView {
               STYLES[theirs].losesTo ? ` Quem leva vantagem contra ele: ${STYLES[STYLES[theirs].losesTo!].name}.` : ' Ele está fora do ciclo.',
               ' A IA também pode trocar o dela.',
             ),
+            s.extraTrait[PLAYER]
+              ? h(
+                  'p',
+                  { class: 'sub' },
+                  `Se sair do Equilíbrio, ${getPlayer(s, s.extraTrait[PLAYER]!).name} perde ${TRAITS[getPlayer(s, s.extraTrait[PLAYER]!).trait!].name}.`,
+                )
+              : null,
             h(
               'div',
               { class: 'style-grid small' },

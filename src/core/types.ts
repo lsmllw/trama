@@ -1,4 +1,5 @@
 import type { Style } from './estilos';
+import type { Trait } from './caracteristicas';
 // Tipos do Trama Futsal.
 
 export type Team = 'azul' | 'vermelho';
@@ -70,6 +71,14 @@ export interface Player {
   altoRecebido: boolean;
   /** Recebeu um toque curto da Posse de bola nesta fase: o bote de prontidão não ganha bônus contra ele. */
   toqueCurto: boolean;
+  /** Característica do atleta (escolhida antes da partida). */
+  trait: Trait | null;
+  /** Pivô de costas: recebeu passe já tendo jogado e pode escorar de primeira. */
+  escoraPronta: boolean;
+  /** Recebeu a devolução da tabela: pode jogar mais uma vez nesta fase. */
+  tabela: boolean;
+  /** Quem passou a bola para ele nesta fase (para reconhecer a tabela). */
+  lastPasser: string | null;
   /** Perdeu um duelo: sem zona de corte até a próxima fase do seu time. */
   unbalanced: boolean;
   /** Especial da posição já usado neste tempo. */
@@ -97,6 +106,8 @@ export interface Activation {
   picked: Drink | null;
   /** Já sofreu o bote automático depois de andar (não dá mais para desfazer o movimento). */
   reacted: boolean;
+  /** Ativação extra: escora do Pivô de costas (só passe rasteiro, sem andar) ou tabela (anda 2 e chuta ou passa). */
+  mode: 'normal' | 'escora' | 'tabela';
 }
 
 /** Garrafa de energético jogada pela torcida: fica na quadra algumas rodadas. */
@@ -181,6 +192,11 @@ export interface GameState {
   phaseWithBall: boolean;
   /** Fase logo depois de recuperar a bola (vale para o Contra-ataque). */
   counterPhase: boolean;
+  /** Escora e tabela do Pivô de costas já usadas nesta fase. */
+  escoraUsed: boolean;
+  tabelaUsed: boolean;
+  /** Jogador com a característica extra do Equilíbrio (perde se o time sair do Equilíbrio). */
+  extraTrait: Record<Team, string | null>;
   /** Toques curtos completos da Posse de bola nesta fase. */
   passChain: number;
   /** O passe alto livre do Contra-ataque já foi usado nesta fase. */

@@ -34,6 +34,8 @@ import {
 import type { ShotOutcome, ShotPreview } from './game';
 import { nextRandom } from './rng';
 import { STYLE_LIST, STYLES } from './estilos';
+import { statsOf, TRAIT_LIST, traitFits } from './caracteristicas';
+import type { Trait } from './caracteristicas';
 import type { Style } from './estilos';
 import type { Corner, GameState, Player, Pos, Team } from './types';
 
@@ -109,7 +111,9 @@ export function evaluate(s: GameState, team: Team): number {
   v += 200 * (s.score[team] - s.score[other(team)]);
   // Goleiro em casa: perto do centro do gol e entre a bola e o gol.
   const gk = keeperOf(s, team);
-  if (gk) v -= 1.5 * dist(center(gk), ownGoal(team)) + (inArea(team, gk) ? 0 : 25);
+  // O Goleiro com os pés pode sair para jogar quando o time tem a bola (o risco aparece se perder).
+  const libero = gk?.trait === 'goleiroPes' && mine;
+  if (gk) v -= (libero ? 0.4 : 1.5) * dist(center(gk), ownGoal(team)) + (inArea(team, gk) ? 0 : libero ? 3 : 25);
   // Energético guardado vale um pouco (a IA desvia para pegar garrafas quando sai barato).
   const keep = s.half === 2 && s.round >= ROUNDS_PER_HALF ? 0 : 3; // na última rodada, guardar não vale nada
   for (const p of s.players) if (p.energetico) v += p.team === team ? keep : -keep;
@@ -122,10 +126,19 @@ const clone = (s: GameState): GameState => structuredClone({ ...s, events: [], l
 
 /** Lances de cada lado num Duelo, como startDuel calcularia (sem iniciar nada). */
 export function duelLances(s: GameState, ball: Player, mark: Player, _markInitiates: boolean, extra = 0): { lb: number; lm: number } {
-  const rb = ROLES[ball.role];
-  const rm = ROLES[mark.role];
-  let lb = diffLances(rb.dom, rm.mar) - (markers(s, ball).length >= 3 ? 1 : 0) - (ball.fol < 2 ? 1 : 0) + (ball.pedalada ? 0.7 : 0);
-  let lm = diffLances(rm.mar, rb.dom) + (mark.ready && !ball.toqueCurto ? 1 : 0) - (mark.fol < 2 ? 1 : 0) + extra;
+  const rb = statsOf(ball);
+  const rm = statsOf(mark);
+  let lb =
+    diffLances(rb.dom, rm.mar) -
+    (markers(s, ball).length >= 3 ? 1 : 0) -
+    (ball.fol < 2 ? 1 : 0) +
+    (ball.pedalada ? 0.7 : 0) +
+    (ball.trait === 'alaDriblador' ? 0.7 : 0);
+  let lm =
+    diffLances(rm.mar, rb.dom) +
+    (mark.ready && !ball.toqueCurto ? (mark.trait === 'fixoXerife' && _markInitiates ? 2 : 1) : 0) -
+    (mark.fol < 2 ? 1 : 0) +
+    extra;
   lb = Math.max(1, Math.min(3.7, lb));
   lm = Math.max(1, Math.min(3, lm));
   return { lb, lm };
@@ -359,7 +372,7 @@ function planFor(s: GameState, id: string, diff: Difficulty): Plan {
     beginActivation(base, id);
     const me = getPlayer(base, id);
     // Fôlego recuperado conta a favor (mais lances no Duelo e arrancadas).
-    const refill = dr ? (ROLES[me.role].fol - me.fol) * 0.6 + (ROLES[me.role].hab - me.hab) * 0.4 : 0;
+    const refill = dr ? (statsOf(me).fol - me.fol) * 0.6 + (statsOf(me).hab - me.hab) * 0.4 : 0;
     if (dr) {
       if (!canUseDrink(base)) continue;
       useDrink(base);
@@ -450,6 +463,44 @@ function readyValue(s: GameState, p: Player): number {
   // Perto de quem tem a bola, ou entre ela e o nosso gol, a prontidão vira bote ou corte.
   const between = dist(center(p), ownGoal(p.team)) < toGoal;
   return (d <= 2 ? 5 : d <= 4 ? 3 : 1) + (between ? 1.5 : 0);
+}
+
+/** Características que combinam com cada estilo (em ordem de preferência). */
+const TRAIT_PREF: Record<Style, Trait[]> = {
+  pressao: ['pulmao', 'fixoXerife', 'alaVelocista', 'goleiroPes'],
+  posse: ['pivoCostas', 'goleiroPes', 'alaDriblador', 'fixoArmador'],
+  bloco: ['fixoXerife', 'goleiroParedao', 'alaVelocista', 'pivoCostas'],
+  contra: ['fixoArmador', 'alaVelocista', 'goleiroParedao', 'pulmao'],
+  equilibrio: ['alaDriblador', 'fixoXerife', 'pivoCostas', 'goleiroParedao', 'fixoArmador', 'alaVelocista'],
+};
+
+/** Características da IA (às cegas, junto com o estilo): o Recruta escolhe ao acaso; os outros, combos do estilo. */
+export function chooseTraits(s: GameState, team: Team, diff: Difficulty): { playerId: string; trait: Trait }[] {
+  const n = s.styles[team] === 'equilibrio' ? 3 : 2;
+  let order: Trait[];
+  if (diff === 'recruta') {
+    order = [...TRAIT_LIST];
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(nextRandom(s) * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+  } else {
+    // Um pouco de variedade: às vezes pula uma preferência.
+    const pref = TRAIT_PREF[s.styles[team]];
+    order = [...pref.filter(() => nextRandom(s) > 0.2), ...pref];
+  }
+  const picks: { playerId: string; trait: Trait }[] = [];
+  const taken = new Set<string>();
+  const players = teamPlayers(s, team);
+  for (const tr of order) {
+    if (picks.length >= n || picks.some((p) => p.trait === tr)) continue;
+    // Pulmão vai de preferência num ala; as outras, na posição delas.
+    const cands = players.filter((p) => !taken.has(p.id) && traitFits(tr, p.role)).sort((a, b) => (a.role === 'ala' ? 0 : 1) - (b.role === 'ala' ? 0 : 1));
+    if (!cands.length) continue;
+    picks.push({ playerId: cands[0].id, trait: tr });
+    taken.add(cands[0].id);
+  }
+  return picks;
 }
 
 /** Estilo da IA antes da partida (às cegas) ou no intervalo (vendo o do adversário e o placar). */

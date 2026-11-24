@@ -1,7 +1,7 @@
 // Tela inicial: os dois elencos, as posições e a dificuldade.
 
-import { createGame, ROLES, STYLE_LIST, STYLES, WEIGHT_LABEL } from '../core';
-import type { Difficulty, GameState, Player, Role, Style } from '../core';
+import { createGame, ROLES, STYLE_LIST, STYLES, TRAIT_LIST, TRAITS, traitFits, WEIGHT_LABEL } from '../core';
+import type { Difficulty, GameState, Player, Role, Style, Trait } from '../core';
 import { clear, h } from './dom';
 import type { MatchConfig } from './game-view';
 import { roleBadge } from './roles';
@@ -32,12 +32,14 @@ function playerRow(s: GameState, p: Player): HTMLElement {
 export function showSetup(root: HTMLElement, previous: MatchConfig | null, onStart: (c: MatchConfig) => void): void {
   let difficulty: Difficulty = previous?.difficulty ?? 'veterano';
   let style: Style = previous?.style ?? 'equilibrio';
+  let picks: { playerId: string; trait: Trait }[] = previous?.traits ? [...previous.traits] : [];
   const demo = createGame({ seed: 1 });
+  const maxTraits = () => (style === 'equilibrio' ? 3 : 2);
 
   const start = () => {
     hideTip();
     document.removeEventListener('keydown', onKey);
-    onStart({ difficulty, style, seed: Math.floor(Math.random() * 2 ** 31) });
+    onStart({ difficulty, style, traits: picks.slice(0, maxTraits()), seed: Math.floor(Math.random() * 2 ** 31) });
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -49,6 +51,54 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
 
   const render = () => {
     clear(root);
+    picks = picks.slice(0, maxTraits());
+    // A ficha dos jogadores na tela inicial já mostra a característica escolhida.
+    for (const p of demo.players) p.trait = p.team === 'azul' ? (picks.find((k) => k.playerId === p.id)?.trait ?? null) : null;
+    const azul = demo.players.filter((p) => p.team === 'azul');
+    const traitCard = (tr: Trait) => {
+      const d = TRAITS[tr];
+      const mine = picks.find((k) => k.trait === tr);
+      const free = azul.filter((p) => traitFits(tr, p.role) && !picks.some((k) => k.playerId === p.id && k.trait !== tr));
+      const full = !mine && (picks.length >= maxTraits() || !free.length);
+      return h(
+        'div',
+        {
+          class: `style-card trait-card ${mine ? 'on' : ''}${full ? ' off' : ''}`,
+          onclick: () => {
+            if (mine) picks = picks.filter((k) => k !== mine);
+            else if (!full) picks.push({ playerId: free[0].id, trait: tr });
+            render();
+          },
+        },
+        h('b', {}, d.name),
+        h('div', { class: 'meta' }, d.roles.map((r) => ROLES[r].name).join(' / ')),
+        h('div', { class: 'plus' }, '+ ', d.plus),
+        h('div', { class: 'minus' }, '− ', d.minus),
+        mine && free.length > 1
+          ? h(
+              'div',
+              { class: 'trait-who' },
+              free.map((p) =>
+                h(
+                  'button',
+                  {
+                    class: mine.playerId === p.id ? 'on' : '',
+                    onclick: (e: MouseEvent) => {
+                      e.stopPropagation();
+                      mine.playerId = p.id;
+                      render();
+                    },
+                  },
+                  h('img', { src: portraitUrl(p, 1), alt: '' }),
+                  p.name,
+                ),
+              ),
+            )
+          : mine
+            ? h('div', { class: 'trait-who' }, h('span', {}, `Em ${azul.find((p) => p.id === mine.playerId)!.name}`))
+            : null,
+      );
+    };
     const team = (t: 'azul' | 'vermelho') => demo.players.filter((p) => p.team === t);
     const roleCard = (r: Role) => {
       const d = ROLES[r];
@@ -173,6 +223,13 @@ export function showSetup(root: HTMLElement, previous: MatchConfig | null, onSta
             );
           }),
         ),
+        h('h3', {}, `Características (${picks.length}/${maxTraits()})`),
+        h(
+          'p',
+          { class: 'lead small' },
+          `Escolha ${maxTraits()} característica${maxTraits() > 1 ? 's' : ''} para seus atletas${style === 'equilibrio' ? ' (o Equilíbrio leva uma a mais; ela sai se você trocar de estilo no intervalo)' : ''}. Cada uma ganha algo e paga algo, e elas combinam com os estilos. Também ficam escondidas até o apito.`,
+        ),
+        h('div', { class: 'style-grid traits' }, TRAIT_LIST.map(traitCard)),
         h(
           'div',
           { class: 'start-row' },

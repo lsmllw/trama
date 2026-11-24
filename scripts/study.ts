@@ -5,6 +5,8 @@
 
 import {
   activatable,
+  assignTraits,
+  chooseTraits,
   applyDuel,
   beginActivation,
   bonusAction,
@@ -87,6 +89,7 @@ interface Agent {
   corner(s: GameState, pv: ShotPreview): Corner;
   style?: Style;
   label?: string;
+  traits?: boolean;
 }
 
 function agent(name: AgentName): Agent {
@@ -158,6 +161,12 @@ interface GameRec {
 
 function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
   const s = createGame({ seed, styles: { azul: azul.style, vermelho: verm.style } });
+  // Características escolhidas pela IA do estilo (a não ser com ":sem").
+  for (const [t, a] of [
+    ['azul', azul],
+    ['vermelho', verm],
+  ] as const)
+    if (a.traits !== false) assignTraits(s, t, chooseTraits(s, t, 'veterano'));
   const ag = (t: Team) => (t === 'azul' ? azul : verm);
   const mem: Record<Team, LanceMemory> = { azul: newMemory(), vermelho: newMemory() };
   const rec: GameRec = {
@@ -343,8 +352,8 @@ function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
 const [aName, bName, nStr, seedStr, out, ablation] = process.argv.slice(2);
 // "veterano:pressao" = agente Veterano jogando no estilo Pressão alta.
 function withStyle(full: string): Agent {
-  const [name, style] = full.split(':');
-  return { ...agent(name as AgentName), style: (style ?? 'equilibrio') as Style, label: full };
+  const [name, style, opt] = full.split(':');
+  return { ...agent(name as AgentName), style: (style ?? 'equilibrio') as Style, label: full, traits: opt !== 'sem' && !!style };
 }
 // Variações de regra para testar propostas (sem mexer no jogo).
 if (ablation === 'marcacao') {

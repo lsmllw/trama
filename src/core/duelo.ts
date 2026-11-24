@@ -5,6 +5,7 @@
 import { LANCE_FOL, MAX_LANCES, ROLES, TEMPOS, TIRED_FOL, WEIGHT_RANK } from './data';
 import { approachSide, attackGoal, chebyshev, dist, getPlayer, ownGoal } from './court';
 import type { GameState, Player, Weight } from './types';
+import { statsOf } from './caracteristicas';
 
 export type Lance = 'golpe' | 'guarda' | 'finta' | 'esperar';
 export const LANCES: readonly Lance[] = ['golpe', 'guarda', 'finta', 'esperar'];
@@ -95,8 +96,8 @@ export function startDuel(s: GameState, kind: DuelKind, initiatorId: string, tar
     const q = k === 'atk' ? d : a;
     // Com a bola, os lances vêm do Domínio contra a Marcação de quem marca; sem ela, o contrário.
     const withBall = ball === k;
-    const attr = withBall ? ROLES[p.role].dom : ROLES[p.role].mar;
-    const vs = withBall ? ROLES[q.role].mar : ROLES[q.role].dom;
+    const attr = withBall ? statsOf(p).dom : statsOf(p).mar;
+    const vs = withBall ? statsOf(q).mar : statsOf(q).dom;
     let n = diffLances(attr, vs);
     const notes = [`${withBall ? 'Domínio' : 'Marcação'} ${attr} contra ${withBall ? 'Marcação' : 'Domínio'} ${vs}: ${n} lance${n > 1 ? 's' : ''}`];
     let reads = 0;
@@ -104,8 +105,10 @@ export function startDuel(s: GameState, kind: DuelKind, initiatorId: string, tar
     const oneTouch = kind === 'bote' && k === 'atk' && q.toqueCurto;
     if (oneTouch) notes.push('Toque curto: bote sem bônus');
     if ((k === 'def' || kind === 'bote') && p.ready && !oneTouch) {
-      n += 1;
-      notes.push(kind === 'bote' && k === 'atk' ? 'Bote de prontidão +1' : 'Prontidão +1');
+      // Fixo xerife: o bote dele vem com +2.
+      const xerife = kind === 'bote' && k === 'atk' && p.trait === 'fixoXerife';
+      n += xerife ? 2 : 1;
+      notes.push(xerife ? 'Bote do xerife +2' : kind === 'bote' && k === 'atk' ? 'Bote de prontidão +1' : 'Prontidão +1');
     }
     // Bloco baixo: o bote de prontidão dentro do próprio campo vem mais forte.
     if (kind === 'bote' && k === 'atk' && p.ready && !oneTouch && s.styles?.[p.team] === 'bloco' && dist(p, ownGoal(p.team)) < dist(p, attackGoal(p.team))) {
@@ -126,6 +129,10 @@ export function startDuel(s: GameState, kind: DuelKind, initiatorId: string, tar
         n -= 1;
         notes.push(`Cercado por ${m} −1`);
       }
+    }
+    if (withBall && p.trait === 'alaDriblador') {
+      reads += 1;
+      notes.push('Driblador: 1 Leitura');
     }
     if (p.pedalada) {
       reads += 1;
@@ -212,7 +219,7 @@ export function clash(a: Lance, b: Lance, wa: Weight, wb: Weight): Clash {
  * Bônus por tempo vencido: o pesado que protege a bola com o corpo vale o dobro.
  */
 export function duelBonus(cs: DuelState, k: SideKey, p: Player, l: Lance): number {
-  const def = ROLES[p.role];
+  const def = statsOf(p);
   let b = 0;
   if (cs.ball === k && l === 'guarda' && def.weight === 'pesado') b++;
   return b;
@@ -231,7 +238,7 @@ export function resolveTempo(s: GameState, cs: DuelState, atkChoice: Lance, defC
   ] as const) {
     if (l === 'esperar') {
       // Esperar recupera 1 de fôlego e dá uma Leitura para o próximo tempo.
-      p.fol = Math.min(ROLES[p.role].fol, p.fol + 1);
+      p.fol = Math.min(statsOf(p).fol, p.fol + 1);
       if (cs[k].readsLeft < 2) cs[k].readsLeft++;
       continue;
     }

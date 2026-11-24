@@ -4,5 +4,6 @@ export * from './court';
 export * from './duelo';
 export * from './game';
 export * from './estilos';
+export * from './caracteristicas';
 export * from './ai';
 export * from './rng';

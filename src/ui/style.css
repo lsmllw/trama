@@ -1321,3 +1321,81 @@ button.drink-btn img {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* ---------- Características ---------- */
+.style-grid.traits {
+  grid-template-columns: repeat(4, 1fr);
+}
+.trait-card {
+  cursor: pointer;
+}
+.trait-card.off {
+  opacity: 0.45;
+  cursor: default;
+}
+.trait-card .meta {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+}
+.trait-who {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.trait-who button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.trait-who button.on {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+.trait-who img {
+  width: 16px;
+  height: 16px;
+  image-rendering: pixelated;
+}
+.ptrait {
+  color: var(--gold);
+  cursor: help;
+}
+.ptrait.on {
+  color: #7dd8ff;
+}
+.tt-trait {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #ffd23f14;
+  border: 1px solid #ffd23f44;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.tt-trait b {
+  color: var(--gold);
+}
+.tt-trait .plus {
+  color: var(--good);
+}
+.tt-trait .minus {
+  color: var(--vermelho-l);
+}
+@media (max-width: 1100px) {
+  .style-grid.traits {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
