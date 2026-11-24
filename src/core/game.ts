@@ -396,11 +396,7 @@ export function beginActivation(s: GameState, id: string): void {
     reacted: false,
     mode,
   };
-  if (mode === 'escora') {
-    s.escoraUsed = true;
-    p.escoraPronta = false;
-    s.log.push(`${p.name} escora de primeira.`);
-  }
+  // A escora só gasta a chance quando o pivô devolve; desistir dela também a encerra (fim da ativação).
   if (mode === 'tabela') p.tabela = false;
 }
 
@@ -420,6 +416,7 @@ function finishActivation(s: GameState): void {
   p.activated = true;
   p.ready = false;
   if (a.mode === 'normal') s.activationsUsed++;
+  if (a.mode === 'escora') p.escoraPronta = false;
   // Pressão alta: correr atrás da bola cansa.
   if (!s.phaseWithBall && p.team === s.activeTeam && styleOf(s, p.team) === 'pressao') p.fol = Math.max(0, p.fol - PRESSAO_FOL);
   if (s.keeperMustPass === p.id && s.holder === p.id && keeperBound(p)) keeperTimeout(s, p);
@@ -817,7 +814,7 @@ export function shotPreview(s: GameState, p: Player, bomba = false, direto = fal
   const force = def.fin + (bomba ? 2 : 0) + near - (wide ? 1 : 0) - longPosse + worked;
   const keeper = keeperOf(s, other(p.team));
   // Goleiro paredão: reflexo de perto, sofre com o chute de longe.
-  const wallMod = keeper?.trait === 'goleiroParedao' && !direto ? (d <= 3 ? 1 : d > 5 ? -1 : 0) : 0;
+  const wallMod = keeper?.trait === 'goleiroParedao' && !direto ? (d <= 3 ? 1 : 0) : 0;
   const ref = keeper ? statsOf(keeper).ref + (keeper.muralha ? 2 : 0) + wallMod : 0;
   let blockerId: string | undefined;
   if (!direto) {
@@ -932,6 +929,10 @@ export function pass(s: GameState, toId: string, alto: boolean): PassOutcome {
   if (s.holder !== p.id) throw new Error('Sem a bola');
   const to = getPlayer(s, toId);
   if (alto && a.mode === 'escora') throw new Error('A escora é de primeira, rasteira');
+  if (a.mode === 'escora') {
+    s.escoraUsed = true;
+    s.log.push(`${p.name} escora de primeira.`);
+  }
   const pv = passPreview(s, p, to, alto);
   if (!pv.ok) throw new Error('Passe fora do alcance');
   a.acted = true;
@@ -1000,11 +1001,14 @@ export function shoot(s: GameState, bomba = false): ShotOutcome {
   const dive = pv.open ? null : result === 'gol' ? others[Math.floor(nextRandom(s) * 2)] : corner;
   let reboundId: string | undefined;
   const wall = pv.keeperId ? getPlayer(s, pv.keeperId).trait === 'goleiroParedao' : false;
-  if (result === 'defesa' && !wall && pv.force >= pv.refEff - 1 && nextRandom(s) < REBOUND_CHANCE) {
+  if (result === 'defesa' && pv.force >= pv.refEff - 1 && nextRandom(s) < REBOUND_CHANCE) {
     // Chute forte espalmado: a bola sobra para quem estiver mais perto da marca do pênalti.
     const g = attackGoal(p.team);
     const spot = { x: g.x + (p.team === 'azul' ? -2 : 2), y: g.y };
-    const near = s.players.filter((q) => q.role !== 'goleiro').sort((a2, b2) => dist(center(a2), spot) - dist(center(b2), spot))[0];
+    // O Goleiro paredão espalma para o lado de um companheiro.
+    const near = s.players
+      .filter((q) => q.role !== 'goleiro' && (!wall || q.team !== p.team))
+      .sort((a2, b2) => dist(center(a2), spot) - dist(center(b2), spot))[0];
     if (near) {
       result = 'rebote';
       reboundId = near.id;

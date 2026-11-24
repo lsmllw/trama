@@ -98,7 +98,7 @@ function content(s: GameState, p: Player, opts: TipOptions): HTMLDivElement[] {
     ),
     bar('Fôlego', p.fol, d.fol, 'fol'),
     bar('HAB', p.hab, d.hab, 'hab'),
-    p.trait === 'pulmao' || p.trait === 'goleiroPes'
+    p.trait === 'pulmao' || p.trait === 'goleiroPes' || p.trait === 'goleiroParedao'
       ? null
       : h(
           'div',

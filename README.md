@@ -58,11 +58,11 @@ npm run sim -- 200 veterano   # partidas IA × IA, com estatísticas
   - **Pivô de costas** (pivô): escora de primeira mesmo já tendo jogado; devolvendo para quem passou, é tabela e o colega joga de novo (anda 2 e chuta ou passa). Marcação 3 → 2.
   - **Ala velocista** (ala): arrancada custa 2 e dá +3. Domínio 5 → 4.
   - **Ala driblador** (ala): começa todo Duelo com a bola com 1 Leitura. Passe 5 → 4 e o passe alto dele é disputado a até 3 casas.
-  - **Fixo armador** (fixo): passe alto sem custo e com alcance PAS + 2. Marcação 5 → 4.
+  - **Fixo armador** (fixo): passe alto sem custo e com alcance PAS + 2. Domínio 3 → 2.
   - **Fixo xerife** (fixo): o bote de prontidão dele ganha +2. Cada falta dele conta dobrado.
   - **Goleiro com os pés** (goleiro): sai da área como jogador de linha (Domínio 4), sem a regra dos 4 segundos fora dela. Sem a Muralha.
-  - **Goleiro paredão** (goleiro): Reflexo +1 contra chute de perto e as defesas nunca dão rebote. Reflexo −1 contra chute de longe.
-  - **Pulmão** (linha): fôlego máximo +3 e +1 de recuperação por fase. Sem o especial da posição.
+  - **Goleiro paredão** (goleiro): Reflexo +1 contra chute de perto e o rebote das defesas dele sempre sobra para o próprio time. Sem a Muralha.
+  - **Pulmão** (linha): fôlego máximo +3, +1 de recuperação por fase e nunca fica cansado nos Duelos. Sem o especial da posição.
 - **Dificuldade:** Recruta joga o óbvio; Veterano pesa riscos e guarda prontidão; Craque testa as jogadas até o fim da fase e lê seus hábitos nos Duelos.
 
 ## Controles

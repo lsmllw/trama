@@ -119,7 +119,7 @@ export function startDuel(s: GameState, kind: DuelKind, initiatorId: string, tar
       n += 1;
       notes.push('Carrinho +1');
     }
-    if (p.fol < TIRED_FOL) {
+    if (p.fol < TIRED_FOL && p.trait !== 'pulmao') {
       n -= 1;
       notes.push('Cansado −1');
     }

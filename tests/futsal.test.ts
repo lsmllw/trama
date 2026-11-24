@@ -682,6 +682,7 @@ describe('características', () => {
     pass(s, piv.id, false);
     endActivation(s);
     expect(extraMode(s, piv)).toBe('escora');
+    expect(s.escoraUsed).toBe(false); // só gasta quando devolve
     const used = s.activationsUsed;
     beginActivation(s, piv.id);
     expect(destinations(s)).toHaveLength(0);
@@ -736,7 +737,7 @@ describe('características', () => {
     pass(s, piv.id, true);
     expect(rafa.fol).toBe(fol);
   });
-  it('Goleiro com os pés sai da área sem a regra dos 4 segundos; o paredão é forte de perto e fraco de longe', () => {
+  it('Goleiro com os pés sai da área sem a regra dos 4 segundos; o paredão é forte de perto', () => {
     const s = createGame({ seed: 1 });
     clearCourt(s);
     const gui = give(s, 'Gui', 'goleiroPes');
@@ -749,7 +750,7 @@ describe('características', () => {
     expect(hasSpecial(gui)).toBe(false);
     const s2 = createGame({ seed: 1 });
     const biel = give(s2, 'Biel', 'goleiroParedao');
-    expect(hasSpecial(biel)).toBe(true);
+    expect(hasSpecial(biel)).toBe(false);
     clearCourt(s2);
     const piv = byName(s2, 'Marreta');
     Object.assign(piv, { x: 17, y: 4 });
@@ -758,7 +759,7 @@ describe('características', () => {
     Object.assign(piv, { x: 12, y: 4 });
     const far = shotPreview(s2, piv);
     expect(near.ref).toBe(ROLES.goleiro.ref + 1);
-    expect(far.ref).toBe(ROLES.goleiro.ref - 1);
+    expect(far.ref).toBe(ROLES.goleiro.ref);
   });
   it('Ala driblador começa o Duelo com a bola com 1 Leitura', () => {
     const s = createGame({ seed: 1 });

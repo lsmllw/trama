@@ -5,6 +5,7 @@
 
 import {
   activatable,
+  traitFits,
   assignTraits,
   chooseTraits,
   applyDuel,
@@ -41,7 +42,7 @@ import {
   useDrink,
   useRead,
 } from '../src/core';
-import type { Corner, DuelState, GameState, Lance, LanceMemory, Plan, PlannedAction, ShotPreview, SideKey, Style, Team } from '../src/core';
+import type { Corner, DuelState, GameState, Lance, LanceMemory, Plan, PlannedAction, ShotPreview, SideKey, Style, Team, Trait } from '../src/core';
 // @ts-expect-error tipos do Node não estão instalados neste projeto
 import { writeFileSync } from 'node:fs';
 
@@ -90,6 +91,7 @@ interface Agent {
   style?: Style;
   label?: string;
   traits?: boolean;
+  only?: Trait[];
 }
 
 function agent(name: AgentName): Agent {
@@ -165,8 +167,10 @@ function playMatch(seed: number, azul: Agent, verm: Agent): GameRec {
   for (const [t, a] of [
     ['azul', azul],
     ['vermelho', verm],
-  ] as const)
-    if (a.traits !== false) assignTraits(s, t, chooseTraits(s, t, 'veterano'));
+  ] as const) {
+    if (a.only) assignTraits(s, t, placeTraits(s, t, a.only));
+    else if (a.traits !== false) assignTraits(s, t, chooseTraits(s, t, 'veterano'));
+  }
   const ag = (t: Team) => (t === 'azul' ? azul : verm);
   const mem: Record<Team, LanceMemory> = { azul: newMemory(), vermelho: newMemory() };
   const rec: GameRec = {
@@ -353,7 +357,21 @@ const [aName, bName, nStr, seedStr, out, ablation] = process.argv.slice(2);
 // "veterano:pressao" = agente Veterano jogando no estilo Pressão alta.
 function withStyle(full: string): Agent {
   const [name, style, opt] = full.split(':');
-  return { ...agent(name as AgentName), style: (style ?? 'equilibrio') as Style, label: full, traits: opt !== 'sem' && !!style };
+  // ":sem" = sem características; ":t=pivoCostas,pulmao" = só estas.
+  const only = opt?.startsWith('t=') ? (opt.slice(2).split(',') as Trait[]) : undefined;
+  return { ...agent(name as AgentName), style: (style ?? 'equilibrio') as Style, label: full, traits: opt !== 'sem' && !!style, only };
+}
+
+/** Coloca as características pedidas no primeiro atleta livre da posição (o Pulmão vai num ala). */
+function placeTraits(s: GameState, team: Team, list: Trait[]): { playerId: string; trait: Trait }[] {
+  const out: { playerId: string; trait: Trait }[] = [];
+  for (const tr of list) {
+    const p = s.players
+      .filter((q) => q.team === team && traitFits(tr, q.role) && !out.some((o) => o.playerId === q.id))
+      .sort((a, b) => (a.role === 'ala' ? 0 : 1) - (b.role === 'ala' ? 0 : 1))[0];
+    if (p) out.push({ playerId: p.id, trait: tr });
+  }
+  return out;
 }
 // Variações de regra para testar propostas (sem mexer no jogo).
 if (ablation === 'marcacao') {

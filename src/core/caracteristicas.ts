@@ -44,8 +44,8 @@ export const TRAITS: Record<Trait, TraitDef> = {
     name: 'Fixo armador',
     roles: ['fixo'],
     plus: 'Passe alto sem custo de fôlego e com alcance PAS + 2.',
-    minus: 'Marcação 5 → 4.',
-    mods: { mar: -1 },
+    minus: 'Domínio 3 → 2: com a bola, perde mais Duelos.',
+    mods: { dom: -1 },
   },
   fixoXerife: {
     name: 'Fixo xerife',
@@ -64,14 +64,14 @@ export const TRAITS: Record<Trait, TraitDef> = {
   goleiroParedao: {
     name: 'Goleiro paredão',
     roles: ['goleiro'],
-    plus: 'Reflexo +1 contra chute de perto (até 3 casas), e as defesas dele nunca dão rebote.',
-    minus: 'Reflexo −1 contra chute de longe (mais de 5 casas).',
+    plus: 'Reflexo +1 contra chute de perto (até 3 casas), e o rebote das defesas dele sempre sobra para o próprio time.',
+    minus: 'Não tem a Muralha.',
     mods: {},
   },
   pulmao: {
     name: 'Pulmão',
     roles: ['fixo', 'ala', 'pivo'],
-    plus: 'Fôlego máximo +3 e recupera +1 a mais por fase.',
+    plus: 'Fôlego máximo +3, recupera +1 a mais por fase e nunca fica cansado nos Duelos.',
     minus: 'Perde o especial da posição.',
     mods: { fol: 3 },
   },
@@ -98,7 +98,7 @@ export function statsOf(p: Pick<Player, 'role' | 'trait'>): RoleDef {
 
 /** O jogador ainda tem o especial da posição (o Pulmão e o Goleiro paredão não têm). */
 export function hasSpecial(p: Player): boolean {
-  return !p.specialUsed && p.trait !== 'pulmao' && p.trait !== 'goleiroPes';
+  return !p.specialUsed && p.trait !== 'pulmao' && p.trait !== 'goleiroPes' && p.trait !== 'goleiroParedao';
 }
 
 export function traitFits(t: Trait, role: Role): boolean {

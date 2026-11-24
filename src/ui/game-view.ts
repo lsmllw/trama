@@ -970,7 +970,9 @@ export class GameView {
           { class: 'prole' },
           `${def.name} · `,
           p.trait ? h('span', { class: 'ptrait', title: `${TRAITS[p.trait].plus}\n− ${TRAITS[p.trait].minus}` }, TRAITS[p.trait].name) : null,
-          p.trait === 'pulmao' || p.trait === 'goleiroPes' ? '' : `${p.trait ? ' · ' : ''}${hasSpecial(p) ? def.special : `${def.special} usado`}`,
+          p.trait === 'pulmao' || p.trait === 'goleiroPes' || p.trait === 'goleiroParedao'
+            ? ''
+            : `${p.trait ? ' · ' : ''}${hasSpecial(p) ? def.special : `${def.special} usado`}`,
           extra ? h('span', { class: 'ptrait on' }, extra === 'escora' ? ' ↩ escora' : ' ↩ tabela') : null,
         ),
         h('div', { class: 'bars' }, bar(p.fol, def.fol, 'fol'), bar(p.hab, def.hab, 'hab')),
@@ -1123,7 +1125,7 @@ export class GameView {
               bomba ? `B · Bomba (${pct(bomba)}%)` : 'B · Bomba',
             )
           : null,
-        (p.role === 'goleiro' || p.role === 'ala') && p.trait !== 'pulmao' && p.trait !== 'goleiroPes' && a.mode === 'normal'
+        (p.role === 'goleiro' || p.role === 'ala') && p.trait !== 'pulmao' && p.trait !== 'goleiroPes' && p.trait !== 'goleiroParedao' && a.mode === 'normal'
           ? h(
               'button',
               {

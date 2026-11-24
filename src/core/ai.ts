@@ -1,7 +1,7 @@
 // IA do futsal: avalia a posição para cada time e simula as jogadas de cada jogador.
 
 import { CHUTE_BASE, COURT_W, FOUL_LIMIT, ROLES, ROUNDS_PER_HALF } from './data';
-import { center, dist, distToGoal, getPlayer, holderOf, inArea, keeperOf, other, ownGoal, teamPlayers } from './court';
+import { center, dist, distToGoal, getPlayer, holderOf, inArea, keeperOf, other, ownGoal, playerAt, teamPlayers } from './court';
 import { LANCES, canPlay, clash, diffLances, markers, otherSide, resolveTempo, useRead } from './duelo';
 import type { DuelState, Lance, SideKey } from './duelo';
 import {
@@ -65,18 +65,48 @@ export function directChance(pv: ShotPreview): number {
  * Chance de gol de quem tem a bola, pesada por quando ele chuta: ainda nesta fase (se pode agir) vale inteira;
  * só na próxima fase do time, depois do adversário jogar, vale a metade.
  */
-function shotQuality(s: GameState, p: Player): number {
+function shotQuality(s: GameState, p: Player, from?: Player): number {
   const q = goalChance(shotPreview(s, p));
-  return canStillAct(s, p) ? q : q * 0.5;
+  if (!canStillAct(s, p, from)) return q * 0.5;
+  // Na tabela, quem recebe de volta ainda anda 2 casas antes de chutar.
+  return p.activated ? tabelaShot(s, p) : q;
+}
+
+/** Melhor chance de chute andando até 2 casas (a jogada da tabela). */
+function tabelaShot(s: GameState, p: Player): number {
+  let best = 0;
+  for (let dx = -2; dx <= 2; dx++)
+    for (let dy = -2; dy <= 2; dy++) {
+      if (Math.abs(dx) + Math.abs(dy) > 2) continue;
+      const x = p.x + dx;
+      const y = p.y + dy;
+      if (x < 0 || y < 0 || x >= s.width || y >= s.height || ((dx || dy) && playerAt(s, x, y))) continue;
+      best = Math.max(best, goalChance(shotPreview(s, { ...p, x, y })));
+    }
+  return best;
 }
 
 /** O jogador ainda age nesta fase do time? (Quem está em ação conta como já usado.) */
-function canStillAct(s: GameState, p: Player): boolean {
-  if (s.activeTeam !== p.team || p.activated || p.altoRecebido) return false;
+function canStillAct(s: GameState, p: Player, from?: Player): boolean {
+  if (s.activeTeam !== p.team || p.altoRecebido) return false;
+  if (p.activated) {
+    // Tabela: recebeu a devolução do Pivô de costas (ou vai receber, se o pivô devolver para quem passou).
+    if (p.tabela && s.holder === p.id) return true;
+    return !!from && from.trait === 'pivoCostas' && from.lastPasser === p.id && !s.tabelaUsed && pivotCanReturn(s, from);
+  }
   const a = s.activation;
   if (a && a.playerId === p.id) return !a.acted || a.bonus;
   const used = s.activationsUsed + (a ? 1 : 0);
   return used < s.activationsMax;
+}
+
+/** O Pivô de costas com a bola ainda consegue devolver nesta fase (jogando normalmente ou na escora). */
+function pivotCanReturn(s: GameState, piv: Player): boolean {
+  if (s.holder !== piv.id || s.activeTeam !== piv.team) return false;
+  const a = s.activation;
+  if (a && a.playerId === piv.id) return !a.acted;
+  if (!piv.activated) return s.activationsUsed + (a ? 1 : 0) < s.activationsMax;
+  return piv.escoraPronta && !s.escoraUsed;
 }
 
 /** Quão perigosa é a posse do time `team` neste momento (0 a ~60). */
@@ -94,7 +124,7 @@ function possessionValue(s: GameState, team: Team): number {
       const pv = passPreview(s, h, q, alto);
       if (!pv.ok || pv.result !== 'ok') continue;
       safe++;
-      best = Math.max(best, 20 * shotQuality(s, q) + 8 * (1 - Math.min(1, distToGoal(q, team) / COURT_W)) - 3 * markers(s, q).length);
+      best = Math.max(best, 20 * shotQuality(s, q, h) + 8 * (1 - Math.min(1, distToGoal(q, team) / COURT_W)) - 3 * markers(s, q).length);
       break;
     }
   }
@@ -131,13 +161,13 @@ export function duelLances(s: GameState, ball: Player, mark: Player, _markInitia
   let lb =
     diffLances(rb.dom, rm.mar) -
     (markers(s, ball).length >= 3 ? 1 : 0) -
-    (ball.fol < 2 ? 1 : 0) +
+    (ball.fol < 2 && ball.trait !== 'pulmao' ? 1 : 0) +
     (ball.pedalada ? 0.7 : 0) +
     (ball.trait === 'alaDriblador' ? 0.7 : 0);
   let lm =
     diffLances(rm.mar, rb.dom) +
     (mark.ready && !ball.toqueCurto ? (mark.trait === 'fixoXerife' && _markInitiates ? 2 : 1) : 0) -
-    (mark.fol < 2 ? 1 : 0) +
+    (mark.fol < 2 && mark.trait !== 'pulmao' ? 1 : 0) +
     extra;
   lb = Math.max(1, Math.min(3.7, lb));
   lm = Math.max(1, Math.min(3, lm));
@@ -273,6 +303,25 @@ export interface Plan {
 }
 
 /** Valor esperado de uma ação, simulando o resultado (os sorteios viram médias). */
+/**
+ * Tabela: passou rasteiro para o Pivô de costas? Simula a devolução e a jogada de quem recebe de volta
+ * (anda até 2 e chuta ou passa). Vale um pouco menos que o certo, porque o pivô pode não devolver.
+ */
+function tabelaValue(t: GameState, team: Team, passerId: string, act: PlannedAction & { kind: 'passe' }): number {
+  const piv = getPlayer(t, act.toId);
+  if (act.alto || piv.trait !== 'pivoCostas' || t.holder !== piv.id || t.tabelaUsed || !pivotCanReturn(t, piv)) return -Infinity;
+  const u = clone(t);
+  if (u.activation) endActivation(u);
+  if (u.over || u.activeTeam !== team || !activatable(u).some((q) => q.id === piv.id)) return -Infinity;
+  beginActivation(u, piv.id);
+  if (!passPreview(u, getPlayer(u, piv.id), getPlayer(u, passerId), false).ok) return -Infinity;
+  if (pass(u, passerId, false).result !== 'ok' || !getPlayer(u, passerId).tabela) return -Infinity;
+  endActivation(u);
+  if (u.activeTeam !== team) return -Infinity;
+  const plan = planFor(u, passerId, 'veterano');
+  return plan.score - 4;
+}
+
 function actionValue(s: GameState, team: Team, act: PlannedAction): number {
   const p = getPlayer(s, s.activation!.playerId);
   if (act.kind === 'passe') {
@@ -287,7 +336,7 @@ function actionValue(s: GameState, team: Team, act: PlannedAction): number {
       const vLose = evaluate(t, team);
       return (1 - o.markWins) * vKeep + o.markWins * vLose;
     }
-    return evaluate(t, team);
+    return Math.max(evaluate(t, team), tabelaValue(t, team, p.id, act));
   }
   if (act.kind === 'chute') {
     const pv = shotPreview(s, p, act.bomba);
@@ -403,16 +452,27 @@ function planFor(s: GameState, id: string, diff: Difficulty): Plan {
       const risk = (v: number) => (1 - q) * v + q * vLose;
       // Tomar o energético tem custo (perde o bônus guardado), então só vale quando abre jogada.
       const cost = (sp ? 1.5 : 0) - (dr ? refill : 0);
-      const stay = risk(evaluate(t, team)) - cost + styleBias(s, t, id, null);
+      const stay = risk(evaluate(t, team)) - cost + styleBias(s, t, id, null) + traitBias(s, t, id);
       const noise = () => (diff === 'recruta' ? nextRandom(s) * 6 : diff === 'craque' ? nextRandom(s) * 0.1 : nextRandom(s) * 0.5);
       if (stay + noise() > best.score) best = { playerId: id, sprint: sp, move: c, action: null, score: stay, drink: dr };
       for (const act of actionsFor(t)) {
-        const v = risk(actionValue(t, team, act)) - cost + styleBias(s, t, id, act) + noise();
+        const v = risk(actionValue(t, team, act)) - cost + styleBias(s, t, id, act) + traitBias(s, t, id) + noise();
         if (v > best.score) best = { playerId: id, sprint: sp, move: c, action: act, score: v, drink: dr };
       }
     }
   }
   return best;
+}
+
+/** Posicionamento para as características: o Pivô de costas se oferece para a tabela perto da área. */
+function traitBias(s0: GameState, t: GameState, id: string): number {
+  const me = getPlayer(t, id);
+  if (me.trait !== 'pivoCostas' || holderOf(s0).team !== me.team || t.holder === me.id || t.tabelaUsed) return 0;
+  const h = holderOf(t);
+  const pv = passPreview(t, h, me, false);
+  if (!pv.ok || pv.result !== 'ok') return 0;
+  // Bom apoio: de frente para quem tem a bola, perto da área.
+  return distToGoal(me, me.team) <= 6 ? 2.5 : 1;
 }
 
 /** O jeito de jogar de cada estilo: pequenas preferências que a avaliação geral não enxerga. */
